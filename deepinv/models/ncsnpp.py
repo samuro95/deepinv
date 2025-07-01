@@ -264,7 +264,6 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
-                # print(ckpt.keys())
                 self._train_on_minus_one_one = True  # Pretrained on [-1,1]s
                 self.pixel_std = 0.5
             else:
