@@ -266,7 +266,7 @@ class VarianceExplodingDiffusion(DiffusionSDE):
             :return: The diffusion coefficient at time t
             :rtype: float
             """
-            return np.sqrt(2 * self.sigma_t(t) * self.sigma_prime(t))
+            return np.sqrt(2 * self.sigma_t(t) * self.sigma_prime_t(t))
 
         super().__init__(
             forward_drift=forward_drift,
@@ -350,7 +350,7 @@ class myVarianceExplodingDiffusion(DiffusionSDE):
             :return: The diffusion coefficient at time t
             :rtype: float
             """
-            return np.sqrt(2 * self.sigma_t(t) * self.sigma_prime(t))
+            return torch.sqrt(2 * self.sigma_t(t) * self.sigma_prime_t(t))
 
         super().__init__(
             forward_drift=forward_drift,
@@ -509,7 +509,7 @@ class VariancePreservingDiffusion(DiffusionSDE):
 
     def scale_prime_t(self, t: Union[Tensor, float]) -> Tensor:
         t = self._handle_time_step(t)
-        return -  self.sigma_t(t) * self.sigma_prime_t(t) / (self.scale_t(t) ** 3)
+        return - self.sigma_t(t) * self.sigma_prime_t(t) / (self.scale_t(t) ** 3)
 
     def B_t(self, t: Union[Tensor, float]) -> Tensor:
         t = self._handle_time_step(t)
