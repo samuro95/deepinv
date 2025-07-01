@@ -9,14 +9,11 @@ from sphinx_gallery.sorting import ExplicitOrder
 from sphinx_gallery.directives import ImageSg
 import sys
 import os
-from pathlib import Path
 from sphinx.util import logging
-
-import tomlkit
+import doctest
+from importlib.metadata import metadata as importlib_metadata
 
 logger = logging.getLogger(__name__)
-
-import doctest
 
 basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, basedir)
@@ -25,14 +22,11 @@ sys.path.insert(0, basedir)
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-with open(os.path.join(basedir, "pyproject.toml"), "r", encoding="utf-8") as f:
-    metadata = tomlkit.parse(f.read())["project"]
-
-project = str(metadata["name"])
+metadata = importlib_metadata("deepinv")
+project = str(metadata["Name"])
 copyright = "deepinverse contributors 2025"
-
-author = ", ".join(str(auth["name"]) for auth in metadata["authors"])
-release = str(metadata["version"])
+author = str(metadata["Author"])
+release = str(metadata["Version"])
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -49,8 +43,14 @@ extensions = [
     "sphinx_copybutton",
     "sphinx_design",
     "sphinx_sitemap",
+    "sphinxcontrib.bibtex",
 ]
+
+bibtex_bibfiles = ["refs.bib"]
+bibtex_default_style = "plain"
+bibtex_foot_reference_style = "foot"
 copybutton_exclude = ".linenos, .gp"
+bibtex_tooltips = True
 
 intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable/", None),
@@ -69,6 +69,8 @@ autodoc_preserve_defaults = True
 nitpicky = True
 # Create link to the API in the auto examples
 autodoc_inherit_docstrings = False
+# For bibtex
+bibtex_footbibliography_backrefs = True
 # for sitemap
 html_baseurl = "https://deepinv.github.io/deepinv/"
 # the default scheme makes for wrong urls so we specify it properly here
@@ -129,7 +131,22 @@ class TolerantImageSg(ImageSg):
         return super().run()
 
 
+def process_docstring(app, what, name, obj, options, lines):
+    # Check if there is a footcite in the docstring
+    if any(":footcite:" in line for line in lines):
+        # Add the References section if not already present
+        if not any(":References:" in line for line in lines):
+            lines.append("")
+            lines.append("|sep|")
+            lines.append("")
+            lines.append(":References:")
+            lines.append("")
+            lines.append(".. footbibliography::")
+            lines.append("")
+
+
 def setup(app):
+    app.connect("autodoc-process-docstring", process_docstring, priority=10)
     app.add_directive("userguide", UserGuideMacro)
     app.add_directive("image-sg-ignore", TolerantImageSg)
 
@@ -274,4 +291,10 @@ rst_prolog = """
 .. |sep| raw:: html
 
    <hr />
+
 """
+
+napoleon_custom_sections = [
+    ("Reference", "params_style"),  # Sphinx ≥ 3.5
+    # ("Reference", "Parameters"),   # fallback syntax for very old Sphinx (<3.5)
+]
