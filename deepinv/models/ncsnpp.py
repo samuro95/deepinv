@@ -87,10 +87,11 @@ class NCSNpp(Denoiser):
         device=None,
     ):  
         
-        if pretrained.lower() == "edm-ffhq64-uncond-ve":
+        if 've' in pretrained.lower():
             default_config = "VE"
-        elif pretrained.lower() == "edm-ffhq64-uncond-vp":
+        else:
             default_config = "VP"
+            
         
         # for some default configurations, we set default parameters
         if default_config == "VP":
@@ -245,27 +246,14 @@ class NCSNpp(Denoiser):
 
         if pretrained is not None:
             # print(self)
-            if (
-                pretrained.lower() == "edm-ffhq64-uncond-ve"
-                or pretrained.lower() == "download"
-            ):
-                name = "edm-ffhq-64x64-uncond-ve.pt"
-                url = get_weights_url(model_name="edm", file_name=name)
+            if 'edm' in pretrained:
+                url = get_weights_url(model_name="edm", file_name=pretrained)
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
                 self._train_on_minus_one_one = True  # Pretrained on [-1,1]s
                 self.pixel_std = 0.5
-            elif (
-                pretrained.lower() == "edm-ffhq64-uncond-vp"
-            ):
-                name = "edm-ffhq-64x64-uncond-vp.pt"
-                url = get_weights_url(model_name="edm", file_name=name)
-                ckpt = torch.hub.load_state_dict_from_url(
-                    url, map_location=lambda storage, loc: storage, file_name=name
-                )
-                self._train_on_minus_one_one = True  # Pretrained on [-1,1]s
-                self.pixel_std = 0.5
+                self.load_state_dict(ckpt, strict=True)
             else:
                 ckpt = torch.load(pretrained, map_location=lambda storage, loc: storage)
                 self._train_on_minus_one_one = False
