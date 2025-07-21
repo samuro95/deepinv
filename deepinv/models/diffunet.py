@@ -14,12 +14,11 @@ class DiffUNet(Denoiser):
     r"""
     Diffusion UNet model.
 
-    This is the model with attention and timestep embeddings from `Ho et al. <https://arxiv.org/abs/2108.02938>`_;
+    This is the model with attention and timestep embeddings from :footcite:t:`choi2021ilvr`;
     code is adapted from https://github.com/jychoi118/ilvr_adm.
 
-    It is possible to choose the `standard model <https://arxiv.org/abs/2108.02938>`_
-    with 128 hidden channels per layer (trained on FFHQ)
-    and a `larger model <https://arxiv.org/abs/2105.05233>`_ with 256 hidden channels per layer (trained on ImageNet128)
+    It is possible to choose the `standard model from :footcite:t:`choi2021ilvr` with 128 hidden channels per layer (trained on FFHQ)
+    and a larger model :footcite:t:`dhariwal2021diffusion` with 256 hidden channels per layer (trained on ImageNet128).
 
     A pretrained network for (in_channels=out_channels=3)
     can be downloaded via setting ``pretrained='download'``.
@@ -45,6 +44,7 @@ class DiffUNet(Denoiser):
         (only available for 3 input and output channels).
         Finally, ``pretrained`` can also be set as a path to the user's own pretrained weights.
         See :ref:`pretrained-weights <pretrained-weights>` for more details.
+
     """
 
     def __init__(
@@ -385,7 +385,10 @@ class DiffUNet(Denoiser):
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
         :param y: an [N] Tensor of labels, if class-conditional. Default=None.
-        :return: an `(N, C, ...)` Tensor of outputs.
+        :return: an `(N, 2*C, ...)` Tensor of outputs, where the first C
+            channels are the noise estimates and the remaining C are the per-pixel
+            variances, as in the original implementation:
+            https://github.com/openai/guided-diffusion/blob/main/guided_diffusion/gaussian_diffusion.py#L263
         """
         assert (y is not None) == (
             self.num_classes is not None
