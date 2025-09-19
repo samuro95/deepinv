@@ -87,7 +87,31 @@ class NCSNpp(Denoiser):
         pretrained: str = "download",
         pixel_std: float = 0.75,
         device=None,
+        model_type: str= 'NCSN'
     ):
+
+
+        if "DDPM" in model_type:
+            embedding_type = "positional"
+            channel_mult_noise = 1
+            encoder_type = 'standard'
+            resample_filter = (
+                1,
+                1,
+            )
+            
+        elif "NCSN" in model_type:
+            embedding_type = "fourier"
+            channel_mult_noise = 2
+            encoder_type = 'residual'
+            resample_filter = (
+            1,
+            3,
+            3,
+            1,
+        )
+            
+
         assert embedding_type in ["fourier", "positional"]
         assert encoder_type in ["standard", "skip", "residual"]
         assert decoder_type in ["standard", "skip"]
@@ -223,10 +247,11 @@ class NCSNpp(Denoiser):
 
         if pretrained is not None:
             if (
-                pretrained.lower() == "edm-ffhq64-uncond-ve"
+                "edm" in pretrained.lower() 
                 or pretrained.lower() == "download"
-            ):
-                name = "ncsnpp-ffhq64-uncond-ve.pt"
+            ):  
+                print(f"model {pretrained.lower() } loaded")
+                name = pretrained.lower() 
                 url = get_weights_url(model_name="edm", file_name=name)
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
@@ -323,14 +348,20 @@ class NCSNpp(Denoiser):
             sigma, batch_size=x.size(0), ndim=x.ndim, device=x.device, dtype=x.dtype
         )
 
-        # Rescale [0,1] input to [-1,-1]
+        # Rescale [0,1] input to [-1,1]
         if getattr(self, "_train_on_minus_one_one", False):
             x = (x - 0.5) * 2.0
             sigma = sigma * 2.0
+        
         c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
         c_out = sigma * self.pixel_std / (sigma**2 + self.pixel_std**2).sqrt()
         c_in = 1 / (self.pixel_std**2 + sigma**2).sqrt()
         c_noise = sigma.log() / 4
+
+        # c_skip = 1
+        # c_out = sigma
+        # c_in = 1
+        # c_noise = (sigma/2).log()
 
         F_x = self.forward_unet(
             c_in * x,
@@ -342,7 +373,7 @@ class NCSNpp(Denoiser):
         D_x = c_skip * x + c_out * F_x
 
         D_x = D_x.to(dtype)
-        # Rescale [-1,1] output to [0,-1]
+        # Rescale [-1,1] output to [0,1]
         if getattr(self, "_train_on_minus_one_one", False):
             return (D_x + 1.0) / 2.0
         else:

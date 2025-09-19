@@ -10,7 +10,6 @@ from deepinv.sampling.sde_solver import BaseSDESolver, SDEOutput
 from deepinv.sampling.noisy_datafidelity import NoisyDataFidelity
 from copy import deepcopy
 
-
 class _WrapperDenoiserMinusOneOne(nn.Module):
     """
     A wrapper for denoisers trained on [0, 1] images to be used with [-1, 1] images.
@@ -28,7 +27,6 @@ class _WrapperDenoiserMinusOneOne(nn.Module):
         # Scale back to [-1, 1]
         denoised = denoised_01 * 2 - 1
         return denoised
-
 
 class BaseSDE(nn.Module):
     r"""
@@ -121,7 +119,7 @@ class BaseSDE(nn.Module):
         raise NotImplementedError
 
 
-class DiffusionSDE(BaseSDE):
+class BaseDiffusionSDE(BaseSDE):
     r"""
     Define the Reverse-time Diffusion Stochastic Differential Equation.
 
@@ -140,17 +138,10 @@ class DiffusionSDE(BaseSDE):
     :param Callable alpha: a scalar weighting the diffusion term. :math:`\alpha = 0` corresponds to the ODE sampling and :math:`\alpha > 0` corresponds to the SDE sampling.
     :param deepinv.models.Denoiser: a denoiser used to provide an approximation of the score at time :math:`t` :math:`\nabla \log p_t`.
     :param deepinv.sampling.BaseSDESolver solver: the solver for solving the SDE.
-    :param bool minus_one_one: If `True`, wrap the denoiser so that SDE states `x` in [-1, 1] are converted to [0, 1] before denoising and mapped back afterward.
-        Set `True` for denoisers trained on [0, 1] (all denoisers in :class:`deepinv.models.Denoiser`);
-        set `False` only if the denoiser natively expects [-1, 1].
-        This affects only the denoiser interface and usually improves quality when matched to the denoiser's training range.
-        Default: `True`.
     :param torch.dtype dtype: data type of the computation, except for the ``denoiser`` which will use ``torch.float32``.
         We recommend using `torch.float64` for better stability and less numerical error when solving the SDE in discrete time, since
         most computation cost is from evaluating the ``denoiser``, which will be always computed in ``torch.float32``.
     :param torch.device device: device on which the computation is performed.
-    :param \*args: additional arguments for the :class:`deepinv.sampling.BaseSDE`.
-    :param \*\*kwargs: additional keyword arguments for the :class:`deepinv.sampling.BaseSDE`.
     """
 
     def __init__(
@@ -167,12 +158,12 @@ class DiffusionSDE(BaseSDE):
         **kwargs,
     ):
         def backward_drift(x, t, *args, **kwargs):
-            return -forward_drift(x, t) + ((1 + alpha) / 2) * forward_diffusion(
+            return -forward_drift(x, t) + ((1 + alpha)) * forward_diffusion(
                 t
             ) ** 2 * self.score(x, t, *args, **kwargs)
 
         def backward_diffusion(t):
-            return (alpha**0.5) * forward_diffusion(t)
+            return ((2*alpha)**0.5) * forward_diffusion(t)
 
         super().__init__(
             drift=backward_drift,
@@ -211,154 +202,77 @@ class DiffusionSDE(BaseSDE):
     def _handle_time_step(self, t: Union[Tensor, float]) -> Tensor:
         t = torch.as_tensor(t, device=self.device, dtype=self.dtype)
         return t
-
-    def sigma_t(
-        self,
-        t: Union[Tensor, float],
-    ) -> Tensor:
-        r"""
-        The :math:`\sigma(t)` of the condition distribution :math:`p(x_t \vert x_0) \sim \mathcal{N}(s(t)x_0, s(t)^2 \sigma_t^2 \mathrm{Id})`.
-
-        :param torch.Tensor, float t: current time step
-
-        :return: the noise level at time step `t`.
-        :rtype: torch.Tensor
-        """
-        raise NotImplementedError
-
-    def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        r"""
-        The scale :math:`s(t)` of the condition distribution :math:`p(x_t \vert x_0) \sim \mathcal{N}(s(t)x_0, s(t)^2 \sigma_t^2 \mathrm{Id})`.
-
-        :param torch.Tensor, float t: current time step
-
-        :return: the mean of the condition distribution at time step `t`.
-        :rtype: torch.Tensor
-        """
-        raise NotImplementedError
-
-
-class PredCorVarianceExplodingDiffusion(DiffusionSDE):
     
+
+class DiffusionSDE(BaseDiffusionSDE):
+
     def __init__(
         self,
-        denoiser: nn.Module = None,
-        sigma_min: float = 0.02,
-        sigma_max: float = 100,
+        scale_t: Callable,
+        sigma_t: Callable,
+        scale_prime_t: Callable = None,
+        sigma_prime_t: Callable = None,
         alpha: float = 1.0,
-        beta: float = 1.0,
+        denoiser: nn.Module = None,
+        minus_one_one: bool = True,
         solver: BaseSDESolver = None,
         dtype=torch.float64,
         device=torch.device("cpu"),
         *args,
         **kwargs,
     ):
-        def forward_drift(x, t, *args, **kwargs):
-            r"""
-            The drift term of the forward VE-SDE is :math:`0`.
+        self.scale_t = scale_t
+        self.sigma_t = sigma_t
 
-            :param torch.Tensor x: The current state
-            :param torch.Tensor, float t: The current time
-            :return: The drift term, which is 0 for VE-SDE since it only has a diffusion term
-            :rtype: float
-            """
-            return 0.0
+        if scale_prime_t is None:
+            def scale_prime_t(t):
+                t = torch.tensor(self._handle_time_step(t), dtype=torch.float32, requires_grad=True)
+                s = self.scale_t(t)
+                s.backward()
+                return t.grad.item()
+        self.scale_prime_t = scale_prime_t
+
+        if sigma_prime_t is None:
+            def sigma_prime_t(t):
+                t = torch.tensor(self._handle_time_step(t), dtype=torch.float32, requires_grad=True)
+                s = self.sigma_t(t)
+                s.backward()
+                return t.grad.item()
+        self.sigma_prime_t = sigma_prime_t
+
+        def forward_drift(x, t, *args, **kwargs):
+            return (scale_prime_t(t) / scale_t(t)) * x
 
         def forward_diffusion(t):
-            r"""
-            The diffusion coefficient of the forward VE-SDE.
+            return torch.sqrt(2 * scale_t(t)**2 * sigma_t(t) * sigma_prime_t(t))
 
-            :param torch.Tensor, float t: The current time
-            :return: The diffusion coefficient at time t
-            :rtype: float
-            """
-            return torch.sqrt(2 * self.sigma_t(t) * self.sigma_prime_t(t))
-            
         super().__init__(
             forward_drift=forward_drift,
             forward_diffusion=forward_diffusion,
             alpha=alpha,
             denoiser=denoiser,
+            minus_one_one=minus_one_one,
             solver=solver,
             dtype=dtype,
             device=device,
             *args,
             *kwargs,
         )
-        self.beta = beta
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-
-    def sample_init(self, shape, rng: torch.Generator) -> Tensor:
-        r"""
-        Sample from the initial distribution of the reverse-time diffusion SDE, which is a Gaussian with zero mean and covariance matrix :math:`\sigma_{max}^2 \operatorname{Id}`.
-
-        :param tuple shape: The shape of the sample to generate
-        :param torch.Generator rng: Random number generator for reproducibility
-        :return: A sample from the prior distribution
-        :rtype: torch.Tensor
-        """
-        return (
-            torch.randn(shape, generator=rng, device=self.device, dtype=self.dtype)
-            * self.sigma_max
-        )
-
-    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return t ** self.beta
-
-    def sigma_prime_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return self.beta * t ** (self.beta-1)
-
-    def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        return torch.ones_like(self._handle_time_step(t))
 
     def score(self, x: Tensor, t: Union[Tensor, float], *args, **kwargs) -> Tensor:
-        std = self.sigma_t(t)
-        print(std)
-        print(self.sigma_prime_t(t))
-        denoised = self.denoiser(
-            x.to(torch.float32), self.sigma_t(t).to(torch.float32), *args, **kwargs
+        sigma = self.sigma_t(t)
+        scale = self.scale_t(t)
+        denoised = scale * self.denoiser(
+            (x / scale).to(torch.float32),
+            sigma.to(torch.float32),
+            *args,
+            **kwargs,
         ).to(self.dtype)
-        score = (denoised - x.to(self.dtype)) / std.pow(2)
+        score = (denoised - x.to(self.dtype)) / (scale * sigma).pow(2)
         return score
-
-
+    
 
 class VarianceExplodingDiffusion(DiffusionSDE):
-    r"""
-    Variance-Exploding Stochastic Differential Equation (VE-SDE).
-
-    This class implements the reverse-time SDE of the Variance-Exploding SDE (VE-SDE) :footcite:t:`song2020score`.
-
-    The forward-time SDE is defined as follows:
-
-    .. math::
-        d x_t = g(t) d w_t \quad \mbox{where } g(t) = \sigma_{\mathrm{min}} \left( \frac{\sigma_{\mathrm{max}}}{\sigma_{\mathrm{min}}} \right)^t
-
-    The reverse-time SDE is defined as follows:
-
-    .. math::
-        d x_t = -\frac{1 + \alpha}{2} \sigma_{\mathrm{min}}^2 \left( \frac{\sigma_{\mathrm{max}}}{\sigma_{\mathrm{min}}} \right)^{2t} \nabla \log p_t(x_t) dt + \sqrt{\alpha} \sigma_{\mathrm{min}} \left( \frac{\sigma_{\mathrm{max}}}{\sigma_{\mathrm{min}}} \right)^t d w_t
-
-    where :math:`\alpha \in [0,1]` is a constant weighting the diffusion term.
-
-    This class is the reverse-time SDE of the VE-SDE, serving as the generation process.
-
-    :param deepinv.models.Denoiser denoiser: a denoiser used to provide an approximation of the score at time :math:`t` :math:`\nabla \log p_t(x_t)`.
-    :param float sigma_min: the minimum noise level.
-    :param float sigma_max: the maximum noise level.
-    :param float alpha: the weighting factor of the diffusion term.
-    :param deepinv.sampling.BaseSDESolver solver: the solver for solving the SDE.
-    :param torch.dtype dtype: data type of the computation, except for the ``denoiser`` which will use ``torch.float32``.
-        We recommend using `torch.float64` for better stability and less numerical error when solving the SDE in discrete time, since
-        most computation cost is from evaluating the ``denoiser``, which will be always computed in ``torch.float32``.
-    :param torch.device device: device on which the computation is performed.
-    :param \*args: additional arguments for the :class:`deepinv.sampling.DiffusionSDE`.
-    :param \*\*kwargs: additional keyword arguments for the :class:`deepinv.sampling.DiffusionSDE`.
-
-    """
 
     def __init__(
         self,
@@ -372,33 +286,12 @@ class VarianceExplodingDiffusion(DiffusionSDE):
         *args,
         **kwargs,
     ):
-        def forward_drift(x, t, *args, **kwargs):
-            r"""
-            The drift term of the forward VE-SDE is :math:`0`.
-
-            :param torch.Tensor x: The current state
-            :param torch.Tensor, float t: The current time
-            :return: The drift term, which is 0 for VE-SDE since it only has a diffusion term
-            :rtype: float
-            """
-            return 0.0
-
-        def forward_diffusion(t):
-            r"""
-            The diffusion coefficient of the forward VE-SDE.
-
-            :param torch.Tensor, float t: The current time
-            :return: The diffusion coefficient at time t
-            :rtype: float
-            """
-            # return self.sigma_t(t) * np.sqrt(
-            #     2 * (np.log(sigma_max) - np.log(sigma_min))
-            # )
-            return torch.sqrt(2 * self.sigma_t(t) * self.sigma_prime_t(t))
-
+        
         super().__init__(
-            forward_drift=forward_drift,
-            forward_diffusion=forward_diffusion,
+            scale_t=self.scale_t ,
+            sigma_t=self.sigma_t,
+            scale_prime_t=self.scale_prime_t,
+            sigma_prime_t=self.sigma_prime_t,
             alpha=alpha,
             denoiser=denoiser,
             solver=solver,
@@ -434,17 +327,60 @@ class VarianceExplodingDiffusion(DiffusionSDE):
         return self.sigma_t(t) * np.log(self.sigma_max / self.sigma_min)
 
     def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        return torch.ones_like(self._handle_time_step(t))
+        t = self._handle_time_step(t)
+        return torch.ones_like(t)
 
-    def score(self, x: Tensor, t: Union[Tensor, float], *args, **kwargs) -> Tensor:
-        std = self.sigma_t(t)
-        print(std)
-        print(self.sigma_prime_t(t))
-        denoised = self.denoiser(
-            x.to(torch.float32), self.sigma_t(t).to(torch.float32), *args, **kwargs
-        ).to(self.dtype)
-        score = (denoised - x.to(self.dtype)) / std.pow(2)
-        return score
+    def scale_prime_t(self, t: Union[Tensor, float]) -> Tensor:
+        t = self._handle_time_step(t)
+        return torch.zeros_like(t)
+    
+
+class PredCorVarianceExplodingDiffusion(VarianceExplodingDiffusion):
+    r"""
+    `Variance-Exploding Stochastic Differential Equation (VE-SDE) with Predictor-Corrector Sampling, as detailed in 
+
+    The forward-time SDE is defined as follows:
+
+    .. math::
+        d x_t = g(t) d w_t \quad \mbox{where } g(t) = \sigma_{\mathrm{min}} \left( \frac{\sigma_{\mathrm{max}}}{\sigma_{\mathrm{min}}} \right)^t
+
+    The reverse-time SDE is defined as follows:
+
+    .. math::
+        d x_t = -\frac{1 + \alpha}{2} \sigma_{\mathrm{min}}^2 \left( \frac{\sigma_{\mathrm{max}}}{\sigma_{\mathrm{min}}} \right)^{2t} \nabla \log p_t(x_t) dt + \sqrt{\alpha} \sigma_{\mathrm{min}} \left( \frac{\sigma_{\mathrm{max}}}{\sigma_{\mathrm{min}}} \right)^t d w_t
+
+    where :math:`\alpha \in [0,1]` is a constant weighting the diffusion term.
+
+    This class is the reverse-time SDE of the VE-SDE, serving as the generation process.
+
+    :param deepinv.models.Denoiser denoiser: a denoiser used to provide an approximation of the score at time :math:`t` :math:`\nabla \log p_t(x_t)`.
+    :param float sigma_min: the minimum noise level.
+    :param float sigma_max: the maximum noise level.
+    :param float alpha: the weighting factor of the diffusion term.
+    :param deepinv.sampling.BaseSDESolver solver: the solver for solving the SDE.
+    :param torch.dtype dtype: data type of the computation, except for the ``denoiser`` which will use ``torch.float32``.
+        We recommend using `torch.float64` for better stability and less numerical error when solving the SDE in discrete time, since
+        most computation cost is from evaluating the ``denoiser``, which will be always computed in ``torch.float32``.
+    :param torch.device device: device on which the computation is performed.
+    """
+
+    def _init__(
+        self,
+        sigma_min = 0.02,
+        sigma_max = 100,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, sigma_min = sigma_min, sigma_max = sigma_max, **kwargs)
+
+    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
+        t = self._handle_time_step(t)
+        return torch.sqrt(t)
+
+    def sigma_prime_t(self, t: Union[Tensor, float]) -> Tensor:
+        t = self._handle_time_step(t)
+        return 0.5 * ( 1 / torch.sqrt(t))
+    
 
 
 class VariancePreservingDiffusion(DiffusionSDE):
@@ -476,16 +412,15 @@ class VariancePreservingDiffusion(DiffusionSDE):
         We recommend using `torch.float64` for better stability and less numerical error when solving the SDE in discrete time, since
         most computation cost is from evaluating the ``denoiser``, which will be always computed in ``torch.float32``.
     :param torch.device device: device on which the computation is performed.
-    :param \*args: additional arguments for the :class:`deepinv.sampling.DiffusionSDE`.
-    :param \*\*kwargs: additional keyword arguments for the :class:`deepinv.sampling.DiffusionSDE`.
+
 
     """
 
     def __init__(
         self,
         denoiser: Denoiser = None,
-        beta_min: float = 0.0001,
-        beta_max: float = 5.0,
+        beta_min: float = 0.1,
+        beta_max: float = 20,
         alpha: float = 1.0,
         solver: BaseSDESolver = None,
         dtype=torch.float64,
@@ -502,7 +437,7 @@ class VariancePreservingDiffusion(DiffusionSDE):
             :return: The drift term, which is 0 for VE-SDE since it only has a diffusion term
             :rtype: float
             """
-            return - 0.5 * self._beta_t(t).view(-1, 1, 1, 1) * x
+            return -0.5 * self._beta_t(t).view(-1, 1, 1, 1) * x
 
         def forward_diffusion(t):
             r"""
@@ -512,11 +447,13 @@ class VariancePreservingDiffusion(DiffusionSDE):
             :return: The diffusion coefficient at time t
             :rtype: float
             """
-            return (self._beta_t(t).view(-1, 1, 1, 1)).sqrt()
+            return self._beta_t(t).view(-1, 1, 1, 1).sqrt()
 
         super().__init__(
-            forward_drift=forward_drift,
-            forward_diffusion=forward_diffusion,
+            scale_t=self.scale_t ,
+            sigma_t=self.sigma_t,
+            scale_prime_t=self.scale_prime_t,
+            sigma_prime_t=self.sigma_prime_t,
             alpha=alpha,
             denoiser=denoiser,
             solver=solver,
@@ -545,27 +482,25 @@ class VariancePreservingDiffusion(DiffusionSDE):
         t = self._handle_time_step(t)
         return self.beta_min + t * self.beta_d
 
-    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return torch.sqrt(torch.exp(0.5 * t**2 * self.beta_d + t * self.beta_min) - 1.0)
-
     def scale_t(self, t: Union[Tensor, float]) -> Tensor:
         t = self._handle_time_step(t)
         return 1 / torch.sqrt(torch.exp(0.5 * t**2 * self.beta_d + t * self.beta_min))
 
-    def score(self, x: Tensor, t: Union[Tensor, float], *args, **kwargs) -> Tensor:
-        sigma = self.sigma_t(t)
-        scale = self.scale_t(t)
+    def scale_prime_t(self, t: Union[Tensor, float]) -> Tensor:
+        t = self._handle_time_step(t)
+        return - self._beta_t(t) * self.scale_t(t)
 
-        denoised = scale * self.denoiser(
-            (x / scale).to(torch.float32),
-            sigma.to(torch.float32),
-            *args,
-            **kwargs,
-        ).to(self.dtype)
-        score = (denoised - x.to(self.dtype)) / (scale * sigma).pow(2)
+    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
+        t = self._handle_time_step(t)
+        s_t = self.scale_t(t)
+        return torch.sqrt(1/s_t**2 - 1)
 
-        return score
+    def sigma_prime_t(self, t: Union[Tensor, float]) -> Tensor:
+        t = self._handle_time_step(t)
+        beta_t = self._beta_t(t)
+        s_t = self.scale_t(t)
+        sigma_t = self.sigma_t(t)
+        return (1 / sigma_t) * (beta_t / s_t**2)
 
 
 class PosteriorDiffusion(Reconstructor):
@@ -596,13 +531,7 @@ class PosteriorDiffusion(Reconstructor):
     :param torch.dtype dtype: the data type of the sampling solver, except for the ``denoiser`` which will use ``torch.float32``.
         We recommend using `torch.float64` for better stability and less numerical error when solving the SDE in discrete time, since most computation cost is from evaluating the ``denoiser``, which will be always computed in ``torch.float32``.
     :param torch.device device: the device for the computations.
-    :param bool verbose: whether to display a progress bar during the sampling process, optional. Default to `False`.
-    :param bool minus_one_one: If `True`, wrap the denoiser so that SDE states `x` in [-1, 1] are converted to [0, 1] before denoising  and mapped back afterward.
-        Set `True` for denoisers trained on [0, 1] (all denoisers in :class:`deepinv.models.Denoiser`);
-        set `False` only if the denoiser natively expects [-1, 1].
-        This affects only the denoiser interface and usually improves quality when matched to the denoiser's training range.
-        Default: `True`.
-
+    :param bool verbose: whether to display a progress bar during the sampling process, optional. Default to False.
     """
 
     def __init__(
@@ -626,14 +555,13 @@ class PosteriorDiffusion(Reconstructor):
         assert (
             denoiser is not None or sde.denoiser is not None
         ), "A denoiser must be specified."
-        if denoiser is None:
-            denoiser = deepcopy(sde.denoiser)
+        if denoiser is not None:
+            self.sde.denoiser = deepcopy(denoiser)
         if minus_one_one:
             denoiser = _WrapperDenoiserMinusOneOne(denoiser)
-
         self.sde.denoiser = denoiser
         if hasattr(self.data_fidelity, "denoiser"):
-            self.data_fidelity.denoiser = denoiser
+            self.data_fidelity.denoiser = deepcopy(denoiser)
 
         assert (
             solver is not None or sde.solver is not None
@@ -649,7 +577,7 @@ class PosteriorDiffusion(Reconstructor):
         def backward_drift(x, t, y, physics, *args, **kwargs):
             return -self.sde.forward_drift(x, t) + (
                 (1 + self.sde.alpha) / 2
-            ) * (self.sde.forward_diffusion(t) ** 2) * self.score(
+            ) * self.sde.forward_diffusion(t) ** 2 * self.score(
                 y, physics, x, t, *args, **kwargs
             )
 
@@ -706,6 +634,7 @@ class PosteriorDiffusion(Reconstructor):
         solution = self.solver.sample(
             self.posterior,
             x_init,
+            seed,
             y=y,
             physics=physics,
             timesteps=timesteps,
