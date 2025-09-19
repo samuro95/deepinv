@@ -121,7 +121,7 @@ class BaseSDE(nn.Module):
         raise NotImplementedError
 
 
-class DiffusionSDE(BaseSDE):
+class BaseDiffusionSDE(BaseSDE):
     r"""
     Define the Reverse-time Diffusion Stochastic Differential Equation.
 
@@ -236,6 +236,9 @@ class DiffusionSDE(BaseSDE):
         :rtype: torch.Tensor
         """
         raise NotImplementedError
+
+
+
 
 
 class PredCorVarianceExplodingDiffusion(DiffusionSDE):
