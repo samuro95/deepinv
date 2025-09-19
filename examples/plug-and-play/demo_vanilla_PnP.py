@@ -13,7 +13,7 @@ from deepinv.models import DnCNN
 from deepinv.optim.data_fidelity import L2
 from deepinv.optim.prior import PnP
 from deepinv.optim.optimizers import optim_builder
-from deepinv.utils.demo import load_example
+from deepinv.utils.demo import load_example, load_image
 from deepinv.utils.plotting import plot, plot_curves
 
 # %%
@@ -33,13 +33,23 @@ device = dinv.utils.get_freer_gpu() if torch.cuda.is_available() else "cpu"
 # Set up the variable to fetch dataset and operators.
 method = "PnP"
 img_size = 32
-x = load_example(
-    "SheppLogan.png",
+# x = load_example(
+#     "SheppLogan.png",
+#     img_size=img_size,
+#     grayscale=True,
+#     resize_mode="resize",
+#     device=device,
+# )
+x = load_image(
+    path="SheppLogan.png",
     img_size=img_size,
     grayscale=True,
     resize_mode="resize",
     device=device,
 )
+
+print(x.shape)
+
 operation = "tomography"
 
 
@@ -110,7 +120,7 @@ model = optim_builder(
     verbose=verbose,
     params_algo=params_algo,
     custom_init=lambda y, physics: {
-        "est": (physics.A_adjoint(y) * scaling, physics.A_adjoint(y) * scaling)
+        "est": (physics.A_adjoint(y) * scaling)
     },
 )
 
