@@ -29,6 +29,7 @@ class NCSNpp(Denoiser):
     :param int in_channels: Number of color channels at input.
     :param int out_channels: Number of color channels at output.
     :param int label_dim: Number of class labels, 0 = unconditional.
+    :param str model_type: Name of the model. Either `NCSN` for the NCSN++ model from :footcite:t:`song2020score` or `DDPM` for the DDPM model from :footcite:t:`ho2020denoising`. Default `NCSN`.
     :param int augment_dim: Augmentation label dimensionality, 0 = no augmentation.
     :param int model_channels: Base multiplier for the number of channels.
     :param list channel_mult: Per-resolution multipliers for the number of channels.
@@ -61,6 +62,7 @@ class NCSNpp(Denoiser):
         in_channels: int = 3,  # Number of color channels at input.
         out_channels: int = 3,  # Number of color channels at output.
         label_dim: int = 0,  # Number of class labels, 0 = unconditional.
+        model_type: str= 'NCSN', # architeture name 
         augment_dim: int = 9,  # Augmentation label dimensionality, 0 = no augmentation.
         model_channels: int = 128,  # Base multiplier for the number of channels.
         channel_mult: Sequence = (
@@ -87,9 +89,7 @@ class NCSNpp(Denoiser):
         pretrained: str = "download",
         pixel_std: float = 0.75,
         device=None,
-        model_type: str= 'NCSN'
     ):
-
 
         if "DDPM" in model_type:
             embedding_type = "positional"
@@ -353,6 +353,7 @@ class NCSNpp(Denoiser):
             x = (x - 0.5) * 2.0
             sigma = sigma * 2.0
         
+        # EDM parameters
         c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
         c_out = sigma * self.pixel_std / (sigma**2 + self.pixel_std**2).sqrt()
         c_in = 1 / (self.pixel_std**2 + sigma**2).sqrt()

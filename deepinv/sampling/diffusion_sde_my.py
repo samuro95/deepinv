@@ -324,7 +324,8 @@ class VarianceExplodingDiffusion(DiffusionSDE):
 
     def sigma_prime_t(self, t: Union[Tensor, float]) -> Tensor:
         t = self._handle_time_step(t)
-        return self.sigma_t(t) * np.log(self.sigma_max / self.sigma_min)
+        return self.sigma_t(t) * np.sqrt((np.log(sigma_max) - np.log(sigma_min)))
+
 
     def scale_t(self, t: Union[Tensor, float]) -> Tensor:
         t = self._handle_time_step(t)

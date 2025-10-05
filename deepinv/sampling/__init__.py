@@ -15,7 +15,8 @@ from .diffusion_sde import (
     DiffusionSDE,
     VarianceExplodingDiffusion,
     VariancePreservingDiffusion,
-    PredCorVarianceExplodingDiffusion,
+    GenerativeDiffusion,
     PosteriorDiffusion,
+    FlowMatching,
 )
 from .sde_solver import SDEOutput, BaseSDESolver, EulerSolver, HeunSolver

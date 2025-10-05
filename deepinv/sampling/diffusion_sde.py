@@ -167,7 +167,7 @@ class BaseDiffusionSDE(BaseSDE):
         **kwargs,
     ):
         def backward_drift(x, t, *args, **kwargs):
-            return -forward_drift(x, t) + ((1 + alpha) / 2) * forward_diffusion(
+            return -forward_drift(x, t) - ((1 + alpha) / 2) * forward_diffusion(
                 t
             ) ** 2 * self.score(x, t, *args, **kwargs)
 
@@ -212,121 +212,75 @@ class BaseDiffusionSDE(BaseSDE):
         t = torch.as_tensor(t, device=self.device, dtype=self.dtype)
         return t
 
-    def sigma_t(
-        self,
-        t: Union[Tensor, float],
-    ) -> Tensor:
-        r"""
-        The :math:`\sigma(t)` of the condition distribution :math:`p(x_t \vert x_0) \sim \mathcal{N}(s(t)x_0, s(t)^2 \sigma_t^2 \mathrm{Id})`.
 
-        :param torch.Tensor, float t: current time step
+class DiffusionSDE(BaseDiffusionSDE):
 
-        :return: the noise level at time step `t`.
-        :rtype: torch.Tensor
-        """
-        raise NotImplementedError
-
-    def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        r"""
-        The scale :math:`s(t)` of the condition distribution :math:`p(x_t \vert x_0) \sim \mathcal{N}(s(t)x_0, s(t)^2 \sigma_t^2 \mathrm{Id})`.
-
-        :param torch.Tensor, float t: current time step
-
-        :return: the mean of the condition distribution at time step `t`.
-        :rtype: torch.Tensor
-        """
-        raise NotImplementedError
-
-
-
-
-
-class PredCorVarianceExplodingDiffusion(DiffusionSDE):
-    
     def __init__(
         self,
-        denoiser: nn.Module = None,
-        sigma_min: float = 0.02,
-        sigma_max: float = 100,
+        scale_t: Callable = None,
+        sigma_t: Callable = None,
+        scale_prime_t: Callable = None,
+        sigma_prime_t: Callable = None,
         alpha: float = 1.0,
-        beta: float = 1.0,
+        denoiser: nn.Module = None,
         solver: BaseSDESolver = None,
+        minus_one_one: bool = True,
         dtype=torch.float64,
         device=torch.device("cpu"),
         *args,
         **kwargs,
     ):
-        def forward_drift(x, t, *args, **kwargs):
-            r"""
-            The drift term of the forward VE-SDE is :math:`0`.
+        self.scale_t = scale_t
+        self.sigma_t = sigma_t
 
-            :param torch.Tensor x: The current state
-            :param torch.Tensor, float t: The current time
-            :return: The drift term, which is 0 for VE-SDE since it only has a diffusion term
-            :rtype: float
-            """
-            return 0.0
+        if scale_prime_t is None:
+            def scale_prime_t(t):
+                t = torch.tensor(self._handle_time_step(t), dtype=torch.float32, requires_grad=True)
+                s = self.scale_t(t)
+                s.backward()
+                return t.grad.item()
+
+        self.scale_prime_t = scale_prime_t
+
+        if sigma_prime_t is None:
+            def sigma_prime_t(t):
+                t = torch.tensor(self._handle_time_step(t), dtype=torch.float32, requires_grad=True)
+                s = self.sigma_t(t)
+                s.backward()
+                return t.grad.item()
+
+        self.sigma_prime_t = sigma_prime_t
+
+        def forward_drift(x, t, *args, **kwargs):
+            return (scale_prime_t(t) / scale_t(t)) * x
 
         def forward_diffusion(t):
-            r"""
-            The diffusion coefficient of the forward VE-SDE.
+            return torch.sqrt(2 * scale_t(t)**2 * sigma_t(t) * sigma_prime_t(t))
 
-            :param torch.Tensor, float t: The current time
-            :return: The diffusion coefficient at time t
-            :rtype: float
-            """
-            return torch.sqrt(2 * self.sigma_t(t) * self.sigma_prime_t(t))
-            
         super().__init__(
             forward_drift=forward_drift,
             forward_diffusion=forward_diffusion,
             alpha=alpha,
             denoiser=denoiser,
             solver=solver,
+            minus_one_one=minus_one_one,
             dtype=dtype,
             device=device,
             *args,
             *kwargs,
         )
-        self.beta = beta
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-
-    def sample_init(self, shape, rng: torch.Generator) -> Tensor:
-        r"""
-        Sample from the initial distribution of the reverse-time diffusion SDE, which is a Gaussian with zero mean and covariance matrix :math:`\sigma_{max}^2 \operatorname{Id}`.
-
-        :param tuple shape: The shape of the sample to generate
-        :param torch.Generator rng: Random number generator for reproducibility
-        :return: A sample from the prior distribution
-        :rtype: torch.Tensor
-        """
-        return (
-            torch.randn(shape, generator=rng, device=self.device, dtype=self.dtype)
-            * self.sigma_max
-        )
-
-    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return t ** self.beta
-
-    def sigma_prime_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return self.beta * t ** (self.beta-1)
-
-    def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        return torch.ones_like(self._handle_time_step(t))
 
     def score(self, x: Tensor, t: Union[Tensor, float], *args, **kwargs) -> Tensor:
-        std = self.sigma_t(t)
-        print(std)
-        print(self.sigma_prime_t(t))
-        denoised = self.denoiser(
-            x.to(torch.float32), self.sigma_t(t).to(torch.float32), *args, **kwargs
+        sigma = self.sigma_t(t)
+        scale = self.scale_t(t)
+        denoised = scale * self.denoiser(
+            (x / scale).to(torch.float32),
+            sigma.to(torch.float32),
+            *args,
+            **kwargs,
         ).to(self.dtype)
-        score = (denoised - x.to(self.dtype)) / std.pow(2)
+        score = - (denoised - x.to(self.dtype)) / (scale * sigma).pow(2)
         return score
-
 
 
 class VarianceExplodingDiffusion(DiffusionSDE):
@@ -375,33 +329,25 @@ class VarianceExplodingDiffusion(DiffusionSDE):
         *args,
         **kwargs,
     ):
-        def forward_drift(x, t, *args, **kwargs):
-            r"""
-            The drift term of the forward VE-SDE is :math:`0`.
+        def sigma_t(t: Union[Tensor, float]) -> Tensor:
+            t = self._handle_time_step(t)
+            return self.sigma_min * (self.sigma_max / self.sigma_min) ** t
 
-            :param torch.Tensor x: The current state
-            :param torch.Tensor, float t: The current time
-            :return: The drift term, which is 0 for VE-SDE since it only has a diffusion term
-            :rtype: float
-            """
-            return 0.0
+        def sigma_prime_t(t: Union[Tensor, float]) -> Tensor:
+            t = self._handle_time_step(t)
+            return self.sigma_t(t) * np.log(self.sigma_max / self.sigma_min)
 
-        def forward_diffusion(t):
-            r"""
-            The diffusion coefficient of the forward VE-SDE.
+        def scale_t(t: Union[Tensor, float]) -> Tensor:
+            return torch.ones_like(self._handle_time_step(t))
 
-            :param torch.Tensor, float t: The current time
-            :return: The diffusion coefficient at time t
-            :rtype: float
-            """
-            # return self.sigma_t(t) * np.sqrt(
-            #     2 * (np.log(sigma_max) - np.log(sigma_min))
-            # )
-            return torch.sqrt(2 * self.sigma_t(t) * self.sigma_prime_t(t))
+        def scale_prime_t(t: Union[Tensor, float]) -> Tensor:
+            return torch.zeros_like(self._handle_time_step(t))
 
         super().__init__(
-            forward_drift=forward_drift,
-            forward_diffusion=forward_diffusion,
+            sigma_t=sigma_t,
+            sigma_prime_t=sigma_prime_t,
+            scale_t=scale_t,
+            scale_prime_t=scale_prime_t,
             alpha=alpha,
             denoiser=denoiser,
             solver=solver,
@@ -427,27 +373,6 @@ class VarianceExplodingDiffusion(DiffusionSDE):
             torch.randn(shape, generator=rng, device=self.device, dtype=self.dtype)
             * self.sigma_max
         )
-
-    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return self.sigma_min * (self.sigma_max / self.sigma_min) ** t
-
-    def sigma_prime_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return self.sigma_t(t) * np.log(self.sigma_max / self.sigma_min)
-
-    def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        return torch.ones_like(self._handle_time_step(t))
-
-    def score(self, x: Tensor, t: Union[Tensor, float], *args, **kwargs) -> Tensor:
-        std = self.sigma_t(t)
-        print(std)
-        print(self.sigma_prime_t(t))
-        denoised = self.denoiser(
-            x.to(torch.float32), self.sigma_t(t).to(torch.float32), *args, **kwargs
-        ).to(self.dtype)
-        score = (denoised - x.to(self.dtype)) / std.pow(2)
-        return score
 
 
 class VariancePreservingDiffusion(DiffusionSDE):
@@ -479,16 +404,15 @@ class VariancePreservingDiffusion(DiffusionSDE):
         We recommend using `torch.float64` for better stability and less numerical error when solving the SDE in discrete time, since
         most computation cost is from evaluating the ``denoiser``, which will be always computed in ``torch.float32``.
     :param torch.device device: device on which the computation is performed.
-    :param \*args: additional arguments for the :class:`deepinv.sampling.DiffusionSDE`.
-    :param \*\*kwargs: additional keyword arguments for the :class:`deepinv.sampling.DiffusionSDE`.
+
 
     """
 
     def __init__(
         self,
         denoiser: Denoiser = None,
-        beta_min: float = 0.0001,
-        beta_max: float = 5.0,
+        beta_min: float = 0.2,
+        beta_max: float = 40,
         alpha: float = 1.0,
         solver: BaseSDESolver = None,
         dtype=torch.float64,
@@ -496,30 +420,39 @@ class VariancePreservingDiffusion(DiffusionSDE):
         *args,
         **kwargs,
     ):
-        def forward_drift(x, t, *args, **kwargs):
-            r"""
-            The drift term of the forward VE-SDE is :math:`0`.
 
-            :param torch.Tensor x: The current state
-            :param torch.Tensor, float t: The current time
-            :return: The drift term, which is 0 for VE-SDE since it only has a diffusion term
-            :rtype: float
-            """
-            return - 0.5 * self._beta_t(t).view(-1, 1, 1, 1) * x
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+        self.beta_d = beta_max - beta_min
 
-        def forward_diffusion(t):
-            r"""
-            The diffusion coefficient of the forward VE-SDE.
+        def _beta_t(t: Union[Tensor, float]) -> Tensor:
+            t = self._handle_time_step(t)
+            return self.beta_min + t * self.beta_d
 
-            :param torch.Tensor, float t: The current time
-            :return: The diffusion coefficient at time t
-            :rtype: float
-            """
-            return (self._beta_t(t).view(-1, 1, 1, 1)).sqrt()
+        def _B_t(t: Union[Tensor, float]) -> Tensor:
+            t = self._handle_time_step(t)
+            return 0.5 * t**2 * self.beta_d + t * self.beta_min
+
+        def scale_t(t: Union[Tensor, float]) -> Tensor:
+            return torch.exp(-_B_t(t))
+
+        def scale_prime_t(t: Union[Tensor, float]) -> Tensor:
+            return - _beta_t(t) * scale_t(t)
+
+        def sigma_t(t: Union[Tensor, float]) -> Tensor:
+            return torch.sqrt(1/scale_t(t)**2 - 1)
+
+        def sigma_prime_t(t: Union[Tensor, float]) -> Tensor:
+            beta_t = _beta_t(t)
+            s_t = scale_t(t)
+            sigma = sigma_t(t)
+            return (1 / sigma) * (beta_t / s_t**2)
 
         super().__init__(
-            forward_drift=forward_drift,
-            forward_diffusion=forward_diffusion,
+            scale_t=scale_t ,
+            sigma_t=sigma_t,
+            scale_prime_t=scale_prime_t,
+            sigma_prime_t=sigma_prime_t,
             alpha=alpha,
             denoiser=denoiser,
             solver=solver,
@@ -529,9 +462,6 @@ class VariancePreservingDiffusion(DiffusionSDE):
             *kwargs,
         )
 
-        self.beta_min = beta_min
-        self.beta_max = beta_max
-        self.beta_d = beta_max - beta_min
 
     def sample_init(self, shape, rng: torch.Generator) -> Tensor:
         r"""
@@ -544,32 +474,132 @@ class VariancePreservingDiffusion(DiffusionSDE):
         """
         return torch.randn(shape, generator=rng, device=self.device, dtype=self.dtype)
 
-    def _beta_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return self.beta_min + t * self.beta_d
 
-    def sigma_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return torch.sqrt(torch.exp(0.5 * t**2 * self.beta_d + t * self.beta_min) - 1.0)
+class GenerativeDiffusion(DiffusionSDE):
+    
+    def __init__(
+        self,
+        denoiser: Denoiser = None,
+        eta: float = 0.5,
+        alpha: float = 1.0,
+        T: float = 1.0,
+        solver: BaseSDESolver = None,
+        variance_preserving = False,
+        dtype=torch.float64,
+        device=torch.device("cpu"),
+        *args,
+        **kwargs,
+    ):
 
-    def scale_t(self, t: Union[Tensor, float]) -> Tensor:
-        t = self._handle_time_step(t)
-        return 1 / torch.sqrt(torch.exp(0.5 * t**2 * self.beta_d + t * self.beta_min))
+        def sigma_t(t: Union[Tensor, float]) -> Tensor:
+            t = self._handle_time_step(t)
+            return t ** eta
 
-    def score(self, x: Tensor, t: Union[Tensor, float], *args, **kwargs) -> Tensor:
-        sigma = self.sigma_t(t)
-        scale = self.scale_t(t)
+        def sigma_prime_t(t: Union[Tensor, float]) -> Tensor:
+            t = self._handle_time_step(t)
+            return eta * t ** (eta-1)
 
-        denoised = scale * self.denoiser(
-            (x / scale).to(torch.float32),
-            sigma.to(torch.float32),
+        def scale_t(t: Union[Tensor, float]) -> Tensor:
+            if variance_preserving:
+                return 1 / torch.sqrt(sigma_t(t)**2 + 1)
+            else:
+                return 1.
+
+        def scale_prime_t(t: Union[Tensor, float]) -> Tensor:
+            if variance_preserving:
+                return - sigma_prime_t(t) * sigma_t(t) / (sigma_t(t)**2 + 1)**(3/2)
+            else:
+                return 0.
+
+        super().__init__(
+            scale_t=scale_t,
+            sigma_t=sigma_t,
+            scale_prime_t=scale_prime_t,
+            sigma_prime_t=sigma_prime_t,
+            alpha=alpha,
+            denoiser=denoiser,
+            solver=solver,
+            dtype=dtype,
+            device=device,
             *args,
-            **kwargs,
-        ).to(self.dtype)
-        score = (denoised - x.to(self.dtype)) / (scale * sigma).pow(2)
+            *kwargs,
+        )
 
-        return score
+        self.sigma_init = 1 if variance_preserving else sigma_t(T)
 
+
+    def sample_init(self, shape, rng: torch.Generator) -> Tensor:
+        r"""
+        Sample from the initial distribution of the reverse-time diffusion SDE, which is the standard Gaussian distribution.
+
+        :param tuple shape: The shape of the sample to generate
+        :param torch.Generator rng: Random number generator for reproducibility
+        :return: A sample from the prior distribution
+        :rtype: torch.Tensor
+        """
+        return torch.randn(shape, generator=rng, device=self.device, dtype=self.dtype) * self.sigma_init
+
+
+class FlowMatching(DiffusionSDE):
+
+    def __init__(
+        self,
+        a_t: Callable = lambda t : 1-t,
+        a_prime_t: Callable = lambda t : -1,
+        b_t: Callable = lambda t : t,
+        b_prime_t: Callable = lambda t : 1,
+        alpha: float = 0.,
+        denoiser: nn.Module = None,
+        solver: BaseSDESolver = None,
+        minus_one_one: bool = True,
+        dtype=torch.float64,
+        device=torch.device("cpu"),
+        *args,
+        **kwargs,
+    ):
+        self.a_t = a_t
+        self.b_t = b_t
+
+        def scale_t(t, *args, **kwargs):
+            t = self._handle_time_step(t)
+            return a_t(t)
+
+        def scale_prime_t(t, *args, **kwargs):
+            t = self._handle_time_step(t)
+            return a_prime_t(t)
+
+        def sigma_t(t, *args, **kwargs):
+            t = self._handle_time_step(t)
+            return b_t(t) / a_t(t)
+
+        def sigma_prime_t(t, *args, **kwargs):
+            t = self._handle_time_step(t)
+            return (b_prime_t(t) * a_t(t) - a_prime_t(t) * b_t(t))/(a_t(t)**2)
+
+        super().__init__(
+            scale_t=scale_t,
+            sigma_t=sigma_t,
+            scale_prime_t=scale_prime_t,
+            sigma_prime_t=sigma_prime_t,
+            alpha=alpha,
+            denoiser=denoiser,
+            solver=solver,
+            dtype=dtype,
+            device=device,
+            *args,
+            *kwargs,
+        )
+
+    def sample_init(self, shape, rng: torch.Generator) -> Tensor:
+        r"""
+        Sample from the initial distribution of the reverse-time diffusion SDE, which is the standard Gaussian distribution.
+
+        :param tuple shape: The shape of the sample to generate
+        :param torch.Generator rng: Random number generator for reproducibility
+        :return: A sample from the prior distribution
+        :rtype: torch.Tensor
+        """
+        return torch.randn(shape, generator=rng, device=self.device, dtype=self.dtype)
 
 class PosteriorDiffusion(Reconstructor):
     r"""
@@ -650,7 +680,7 @@ class PosteriorDiffusion(Reconstructor):
         self.verbose = verbose
 
         def backward_drift(x, t, y, physics, *args, **kwargs):
-            return -self.sde.forward_drift(x, t) + (
+            return -self.sde.forward_drift(x, t) - (
                 (1 + self.sde.alpha) / 2
             ) * (self.sde.forward_diffusion(t) ** 2) * self.score(
                 y, physics, x, t, *args, **kwargs

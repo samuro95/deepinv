@@ -166,7 +166,7 @@ class DRUNet(Denoiser):
         x = self.m_tail(x + x1)
         return x
 
-    def forward(self, x, sigma):
+    def forward(self, x, sigma, **kwargs):
         r"""
         Run the denoiser on image with noise level :math:`\sigma`.
 
