@@ -1,3 +1,4 @@
+from __future__ import annotations
 from contextlib import nullcontext
 
 import torch.nn as nn
@@ -29,12 +30,14 @@ class DiscriminatorMetric:
 
     def __init__(
         self,
-        metric: nn.Module = nn.MSELoss(),
+        metric: nn.Module | None = None,
         real_label: float = 1.0,
         fake_label: float = 0.0,
         no_grad: bool = False,
         device="cpu",
     ):
+        if metric is None:
+            metric = nn.MSELoss()
         self.real = Tensor([real_label]).to(device)
         self.fake = Tensor([fake_label]).to(device)
         self.no_grad = no_grad

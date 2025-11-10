@@ -1,8 +1,9 @@
+from __future__ import annotations
 import torch
 import torch.nn as nn
 from torch import Tensor
 
-from typing import Union
+from typing import Union, Sequence  # noqa: F401
 from .utils import get_weights_url
 from .base import Denoiser
 
@@ -36,17 +37,17 @@ class GSPnP(Denoiser):
         self.detach = detach
 
     def potential(
-        self, x: Tensor, sigma: Union[float, torch.Tensor], *args, **kwargs
+        self, x: Tensor, sigma: float | torch.Tensor, *args, **kwargs
     ) -> Tensor:
         N = self.student_grad(x, sigma)
         return (
             0.5
             * self.alpha
-            * torch.norm((x - N).view(x.shape[0], -1), p=2, dim=-1) ** 2
+            * torch.linalg.vector_norm(x - N, dim=tuple(range(1, x.dim())), ord=2) ** 2
         )
 
     def potential_grad(
-        self, x: Tensor, sigma: Union[float, torch.Tensor], *args, **kwargs
+        self, x: Tensor, sigma: float | torch.Tensor, *args, **kwargs
     ) -> Tensor:
         r"""
         Calculate :math:`\nabla g` the gradient of the regularizer :math:`g` at input :math:`x`.
@@ -68,7 +69,7 @@ class GSPnP(Denoiser):
         Dg = x - N - JN
         return self.alpha * Dg
 
-    def forward(self, x: Tensor, sigma: Union[float, torch.Tensor]) -> Tensor:
+    def forward(self, x: Tensor, sigma: float | torch.Tensor) -> Tensor:
         r"""
         Denoising with Gradient Step Denoiser
 
@@ -85,7 +86,7 @@ def GSDRUNet(
     in_channels=3,
     out_channels=3,
     nb=2,
-    nc=[64, 128, 256, 512],
+    nc=(64, 128, 256, 512),
     act_mode="E",
     pretrained=None,
     device=torch.device("cpu"),
@@ -99,7 +100,7 @@ def GSDRUNet(
     :param int in_channels: Number of input channels
     :param int out_channels: Number of output channels
     :param int nb: Number of blocks in the DRUNet
-    :param list[int,int,int,int] nc: number of channels per convolutional layer in the DRUNet. The network has a fixed number of 4 scales with ``nb`` blocks per scale (default: ``[64,128,256,512]``).
+    :param Sequence[int,int,int,int] nc: number of channels per convolutional layer in the DRUNet. The network has a fixed number of 4 scales with ``nb`` blocks per scale (default: ``[64,128,256,512]``).
     :param str act_mode: activation mode, "R" for ReLU, "L" for LeakyReLU "E" for ELU and "S" for Softplus.
     :param str downsample_mode: Downsampling mode, "avgpool" for average pooling, "maxpool" for max pooling, and
         "strideconv" for convolution with stride 2.

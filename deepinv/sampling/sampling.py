@@ -1,6 +1,8 @@
+from __future__ import annotations
 import sys
 from collections import deque
-from typing import Union, Callable
+from typing import Callable
+from types import MappingProxyType
 
 import torch
 from tqdm import tqdm
@@ -12,6 +14,7 @@ from deepinv.optim.utils import check_conv
 from deepinv.physics import Physics, LinearPhysics
 from deepinv.sampling.sampling_iterators import *
 from deepinv.sampling.utils import Welford
+from deepinv.utils.compat import zip_strict
 
 
 class BaseSampling(Reconstructor):
@@ -85,7 +88,7 @@ class BaseSampling(Reconstructor):
         thresh_conv: float = 1e-3,
         crit_conv: str = "residual",
         thinning: int = 10,
-        history_size: Union[int, bool] = 5,
+        history_size: int | bool = 5,
         verbose: bool = False,
     ):
         super(BaseSampling, self).__init__()
@@ -115,8 +118,8 @@ class BaseSampling(Reconstructor):
         self,
         y: torch.Tensor,
         physics: Physics,
-        x_init: Union[torch.Tensor, dict, None] = None,
-        seed: Union[int, None] = None,
+        x_init: torch.Tensor | dict | None = None,
+        seed: int | None = None,
         **kwargs,
     ) -> torch.Tensor:
         r"""
@@ -139,9 +142,9 @@ class BaseSampling(Reconstructor):
         self,
         y: torch.Tensor,
         physics: Physics,
-        x_init: Union[torch.Tensor, dict, None] = None,
-        seed: Union[int, None] = None,
-        g_statistics: Union[Callable, list[Callable]] = [lambda d: d["x"]],
+        x_init: torch.Tensor | dict | None = None,
+        seed: int | None = None,
+        g_statistics: Callable | list[Callable] = (lambda d: d["x"],),
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         r"""
@@ -218,6 +221,9 @@ class BaseSampling(Reconstructor):
             self.mean_convergence = False
             self.var_convergence = False
 
+            if isinstance(g_statistics, tuple):
+                g_statistics = list(g_statistics)
+
             if not isinstance(g_statistics, list):
                 g_statistics = [g_statistics]
 
@@ -255,9 +261,7 @@ class BaseSampling(Reconstructor):
                     if self.history_size:
                         self.history.append(X)
 
-                    for _, (g, stat) in enumerate(
-                        zip(g_statistics, statistics, strict=True)
-                    ):
+                    for _, (g, stat) in enumerate(zip_strict(g_statistics, statistics)):
                         stat.update(g(X))
 
             # Check convergence for all statistics
@@ -341,7 +345,7 @@ class BaseSampling(Reconstructor):
 
 
 def create_iterator(
-    iterator: Union[SamplingIterator, str], cur_params, **kwargs
+    iterator: SamplingIterator | str, cur_params, **kwargs
 ) -> SamplingIterator:
     r"""
     Helper function for creating an iterator instance of the :class:`deepinv.sampling.SamplingIterator` class.
@@ -359,15 +363,15 @@ def create_iterator(
 
 
 def sampling_builder(
-    iterator: Union[SamplingIterator, str],
+    iterator: SamplingIterator | str,
     data_fidelity: DataFidelity,
     prior: Prior,
-    params_algo: dict = {},
+    params_algo: dict = MappingProxyType({}),
     max_iter: int = 100,
     thresh_conv: float = 1e-3,
     burnin_ratio: float = 0.2,
     thinning: int = 10,
-    history_size: Union[int, bool] = 5,
+    history_size: int | bool = 5,
     verbose: bool = False,
     callback: Callable = lambda X, **kwargs: None,
     **kwargs,

@@ -15,8 +15,8 @@ import deepinv as dinv
 from torch.utils.data import DataLoader
 from deepinv.optim.data_fidelity import L2
 from deepinv.optim.prior import Prior
-from deepinv.unfolded import unfolded_builder
-from deepinv.utils.demo import get_data_home
+from deepinv.optim import PGD
+from deepinv.utils import get_data_home
 
 # %%
 # Setup paths for data loading and results.
@@ -139,7 +139,7 @@ def g(x, *args, **kwargs):
 prior = Prior(g=g)
 
 # %%
-# We use :func:`deepinv.unfolded.unfolded_builder` to define the unfolded algorithm
+# We use :func:`deepinv.optim.PGD` with `unfold=True` to define the unfolded algorithm
 # and set both the stepsizes of the PGD algorithm :math:`\gamma` (``stepsize``) and the soft
 # thresholding parameters :math:`\lambda` as learnable parameters.
 # These parameters are initialized with a table of length max_iter,
@@ -148,32 +148,28 @@ prior = Prior(g=g)
 
 # Unrolled optimization algorithm parameters
 max_iter = 5  # Number of unrolled iterations
-lamb = [
+lambda_reg = [
     1.0
 ] * max_iter  # initialization of the regularization parameter. A distinct lamb is trained for each iteration.
 stepsize = [
     1.0
 ] * max_iter  # initialization of the stepsizes. A distinct stepsize is trained for each iteration.
-params_algo = {  # wrap all the restoration parameters in a 'params_algo' dictionary
-    "stepsize": stepsize,
-    "lambda": lamb,
-}
 trainable_params = [
     "stepsize",
-    "lambda",
-]  # define which parameters from 'params_algo' are trainable
+    "lambda_reg",
+]  # define which parameters are trainable
 
 # Select the data fidelity term
 data_fidelity = L2()
 
 # Logging parameters
 verbose = True
-wandb_vis = False  # plot curves and images in Weight&Bias
 
 # Define the unfolded trainable model.
-model = unfolded_builder(
-    iteration="PGD",
-    params_algo=params_algo.copy(),
+model = PGD(
+    unfold=True,
+    stepsize=stepsize,
+    lambda_reg=lambda_reg,
     trainable_params=trainable_params,
     data_fidelity=data_fidelity,
     max_iter=max_iter,
@@ -227,7 +223,6 @@ trainer = dinv.Trainer(
     save_path=str(CKPT_DIR / operation),
     verbose=verbose,
     show_progress_bar=False,  # disable progress bar for better vis in sphinx gallery.
-    wandb_vis=wandb_vis,  # training visualization can be done in Weight&Bias
 )
 
 
@@ -237,9 +232,9 @@ model = trainer.train()
 # Test the network.
 # -----------------
 #
-# We now test the learned unrolled network on the test dataset. In the plotted results, the `Linear` column shows the
-# measurements back-projected in the image domain, the `Recons` column shows the output of our LISTA network,
-# and `GT` shows the ground truth.
+# We now test the learned unrolled network on the test dataset. In the plotted results, the first column shows the
+# measurements back-projected in the image domain, the second column shows the output of our network,
+# and the third shows the ground truth.
 #
 
 trainer.test(test_dataloader)
@@ -267,9 +262,10 @@ dinv.utils.plot(
 # ------------------------------------
 #
 # We now plot the weights of the network that were learned and check that they are different from their initialization
-# values. Note that ``g_param`` corresponds to :math:`\lambda` in the proximal gradient algorithm.
 #
 
 dinv.utils.plotting.plot_parameters(
-    model, init_params=params_algo, save_dir=RESULTS_DIR / "unfolded_pgd" / operation
+    model,
+    init_params={"stepsize": stepsize, "lambda": lambda_reg},
+    save_dir=RESULTS_DIR / "unfolded_pgd" / operation,
 )

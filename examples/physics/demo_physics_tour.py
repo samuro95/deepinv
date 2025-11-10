@@ -12,7 +12,7 @@ import torch
 
 import deepinv as dinv
 from deepinv.utils.plotting import plot
-from deepinv.utils.demo import load_example
+from deepinv.utils import load_example
 
 
 # %%
@@ -248,7 +248,9 @@ plot([x, y], titles=["signal", "measurement"])
 # The downsampling class :class:`deepinv.physics.Downsampling` is associated with a downsampling operator.
 
 
-physics = dinv.physics.Downsampling(img_size=img_size, factor=2, device=device)
+physics = dinv.physics.Downsampling(
+    img_size=img_size, factor=2, device=device, filter="bicubic"
+)
 
 
 y = physics(x)

@@ -9,25 +9,22 @@ to accelerate the sampling.
 
 """
 
+# %%
 import torch
 from typing import Any
 import deepinv as dinv
 from deepinv.utils.plotting import plot
-from deepinv.utils.demo import load_url_image
+from deepinv.utils import load_example
 
 # %%
 # Load image from the internet
 # ----------------------------
 #
-# This example uses an image of Lionel Messi from Wikipedia.
+# This example uses an image of Messi.
 
 device = dinv.utils.get_freer_gpu() if torch.cuda.is_available() else "cpu"
 
-url = (
-    "https://upload.wikimedia.org/wikipedia/commons/b/b4/"
-    "Lionel-Messi-Argentina-2022-FIFA-World-Cup_%28cropped%29.jpg"
-)
-x = load_url_image(url=url, img_size=32).to(device)
+x = load_example("messi.jpg", img_size=32).to(device)
 
 # %%
 # Define forward operator and noise model
@@ -207,12 +204,27 @@ preconula_mean, preconula_var = preconula.sample(y, physics)
 x_lin = physics.A_adjoint(y)
 
 # compute PSNR
-print(f"Linear reconstruction PSNR: {dinv.metric.PSNR()(x, x_lin).item():.2f} dB")
-print(f"ULA posterior mean PSNR: {dinv.metric.PSNR()(x, ula_mean).item():.2f} dB")
-print(
-    f"PreconULA posterior mean PSNR: {dinv.metric.PSNR()(x, preconula_mean).item():.2f} dB"
-)
+psnr_lin = dinv.metric.PSNR()(x, x_lin).item()
+psnr_ula = dinv.metric.PSNR()(x, ula_mean).item()
+psnr_preconula = dinv.metric.PSNR()(x, preconula_mean).item()
+print(f"Linear reconstruction PSNR: {psnr_lin:.2f} dB")
+print(f"ULA posterior mean PSNR: {psnr_ula:.2f} dB")
+print(f"PreconULA posterior mean PSNR: {psnr_preconula:.2f} dB")
 
 # plot results
-imgs = [x_lin, x, ula_mean, preconula_mean]
-plot(imgs, titles=["measurement", "ground truth", "ULA", "PreconULA"])
+plot(
+    {
+        "Ground Truth": x,
+        "Measurement": y,
+        "ULA": ula_mean,
+        "PreconULA": preconula_mean,
+    },
+    subtitles=[
+        f"PSNR:",
+        f"{psnr_lin:.2f} dB",
+        f"{psnr_ula:.2f} dB",
+        f"{psnr_preconula:.2f} dB",
+    ],
+)
+
+# %%

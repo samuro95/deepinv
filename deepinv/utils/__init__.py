@@ -13,6 +13,8 @@ from .plotting import (
     scatter_plot,
     plot_ortho3D,
     rescale_img,  # deprecated
+    enable_tex,
+    disable_tex,
 )
 from .demo import (
     load_url_image,
@@ -39,5 +41,16 @@ from .tensorlist import (
 from .phantoms import RandomPhantomDataset, SheppLoganDataset
 from .patch_extractor import patch_extractor
 from .parameters import get_GSPnP_params
-from .signal import normalize_signal
+from .signals import normalize_signal, complex_abs
 from .mixins import TimeMixin, MRIMixin
+from .compat import zip_strict
+from .io import (
+    load_dicom,
+    load_nifti,
+    load_url,
+    load_np,
+    load_torch,
+    load_mat,
+    load_raster,
+    load_ismrmd,
+)

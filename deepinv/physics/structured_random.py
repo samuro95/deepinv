@@ -1,3 +1,4 @@
+from __future__ import annotations
 import math
 from deepinv.physics.functional import dst1
 import numpy as np
@@ -87,11 +88,13 @@ def generate_diagonal(
     mode: str,
     dtype=torch.cfloat,
     device="cpu",
-    generator=torch.Generator("cpu"),
+    generator: torch.Generator | None = None,
 ):
     r"""
     Generate a random tensor as the diagonal matrix.
     """
+    if generator is None:
+        generator = torch.Generator(device)
 
     if mode == "uniform_phase":
         diag = torch.rand(shape)

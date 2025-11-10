@@ -29,13 +29,15 @@ and Hadamard spectrum.
 
 """
 
+# %%
 import torch
 from pathlib import Path
 import deepinv as dinv
-from deepinv.utils.demo import get_image_url, load_url_image
+from deepinv.utils import get_image_url, load_url_image
 from deepinv.utils.plotting import plot
 from deepinv.loss.metric import PSNR
 from deepinv.physics.singlepixel import hadamard_2d_shift
+from deepinv.utils.compat import zip_strict
 
 # %%
 # General Setup
@@ -96,7 +98,7 @@ physics_list = [
 # -----------------------------------------
 # Generate measurements using the physics models and reconstruct images using the adjoint operator.
 y_list = [physics(x) for physics in physics_list]
-x_list = [physics.A_adjoint(y) for physics, y in zip(physics_list, y_list, strict=True)]
+x_list = [physics.A_adjoint(y) for physics, y in zip_strict(physics_list, y_list)]
 
 # %%
 # Calculate PSNR
@@ -108,11 +110,8 @@ psnr_values = [psnr_metric(x_recon, x).item() for x_recon in x_list]
 # Prepare titles for plotting
 title_orderings = [o.replace("_", " ").title() for o in orderings]
 title_orderings[-1] = "XY"  # Special case for 'xy'
-titles = ["Ground Truth"] + [
-    f"{ordering}\nPSNR: {psnr:.2f}"
-    for ordering, psnr in zip(title_orderings, psnr_values, strict=True)
-]
-
+titles = ["Ground Truth"] + title_orderings
+subtitles = ["PSNR"] + [f"{psnr:.2f} dB" for psnr in psnr_values]
 # Print information about the SPC setup
 undersampling_rate = physics_list[0].mask.sum().float() / n
 print(f"Image Size: {x.shape}")
@@ -123,7 +122,14 @@ print(f"SPC Undersampling Rate: {undersampling_rate:.2f}")
 # Plot Reconstructions
 # --------------------
 # Visualize the ground truth and reconstructed images with PSNR values.
-plot([x] + x_list, titles=titles, show=True, figsize=(15, 5), fontsize=24)
+plot(
+    [x] + x_list,
+    titles=titles,
+    subtitles=subtitles,
+    show=True,
+    figsize=(15, 5),
+    fontsize=24,
+)
 
 # Recovery Algorithm
 # ------------------
@@ -131,7 +137,7 @@ plot([x] + x_list, titles=titles, show=True, figsize=(15, 5), fontsize=24)
 from deepinv.models import DnCNN
 from deepinv.optim.data_fidelity import L2
 from deepinv.optim.prior import PnP
-from deepinv.optim.optimizers import optim_builder
+from deepinv.optim import ADMM
 
 n_channels = 1  # Number of channels in the image
 
@@ -152,17 +158,16 @@ prior = PnP(denoiser=denoiser)
 # Set optimization parameters
 max_iter = 5  # Maximum number of iterations
 noise_level_img = 0.03  # Noise level in the image
-params_algo = {"stepsize": 0.8, "g_param": noise_level_img}
+stepsize = 0.8  # Step size for the optimization
 
-# Instantiate the optimization algorithm (ADMM)
-model = optim_builder(
-    iteration="ADMM",
+model = ADMM(
     prior=prior,
     data_fidelity=data_fidelity,
     early_stop=False,
     max_iter=max_iter,
     verbose=False,
-    params_algo=params_algo,
+    stepsize=stepsize,
+    g_param=noise_level_img,
     g_first=True,
 )
 
@@ -173,15 +178,13 @@ model.eval()
 x_recon = []
 psnr_values = []
 
-for y, physics in zip(y_list, physics_list, strict=True):
+for y, physics in zip_strict(y_list, physics_list):
     x_recon.append(model(y, physics))
     psnr_values.append(psnr_metric(x_recon[-1], x).item())
 
 # Update titles with PSNR values for the reconstructed images
-titles = ["Ground Truth"] + [
-    f"{ordering}\nPSNR: {psnr:.2f}"
-    for ordering, psnr in zip(title_orderings, psnr_values, strict=True)
-]
+titles = ["Ground Truth"] + title_orderings
+subtitles = ["PSNR"] + [f"{psnr:.2f} dB" for psnr in psnr_values]
 
 # %%
 # Plot ADMM-TV Reconstructions
@@ -190,6 +193,7 @@ titles = ["Ground Truth"] + [
 plot(
     [x] + x_recon,
     titles=titles,
+    subtitles=subtitles,
     show=True,
     figsize=(15, 5),
     fontsize=24,
@@ -222,5 +226,3 @@ plot(
     cmap="jet",
     fontsize=24,
 )
-
-# %%

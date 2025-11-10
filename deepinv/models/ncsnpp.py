@@ -10,6 +10,7 @@ from .utils import (
 from .base import Denoiser
 from torch.nn import Linear, GroupNorm
 from .utils import get_weights_url
+from typing import Sequence
 
 
 class NCSNpp(Denoiser):
@@ -45,7 +46,7 @@ class NCSNpp(Denoiser):
         using Pytorch's default initialization. If ``pretrained='download'``, the weights will be downloaded from an
         online repository (the default model trained on FFHQ at 64x64 resolution (`ffhq64-uncond-ve`) with default architecture).
         Finally, ``pretrained`` can also be set as a path to the user's own pretrained weights.
-        In this case, the model is supposed to be trained on `[0,1]` pixels, if it was trained on `[-1, 1]` pixels, the user should set the attribute `_train_on_minus_one_one` to `True` after loading the weights.
+        In this case, the model is supposed to be trained on `[0,1]` pixels, if it was trained on `[-1, 1]` pixels, the user should set the attribute `_was_trained_on_minus_one_one` to `True` after loading the weights.
         See :ref:`pretrained-weights <pretrained-weights>` for more details.
     :param float pixel_std: The standard deviation of the normalized pixels (to `[0, 1]` for example) of the data distribution. Default to `0.75`.
     :param torch.device device: Instruct our module to be either on cpu or on gpu. Default to ``None``, which suggests working on cpu.
@@ -62,27 +63,27 @@ class NCSNpp(Denoiser):
         label_dim: int = 0,  # Number of class labels, 0 = unconditional.
         augment_dim: int = 9,  # Augmentation label dimensionality, 0 = no augmentation.
         model_channels: int = 128,  # Base multiplier for the number of channels.
-        channel_mult: list = [
+        channel_mult: Sequence = (
             1,
             2,
             2,
             2,
-        ],  # Per-resolution multipliers for the number of channels.
+        ),  # Per-resolution multipliers for the number of channels.
         channel_mult_emb: int = 4,  # Multiplier for the dimensionality of the embedding vector.
         num_blocks: int = 4,  # Number of residual blocks per resolution.
-        attn_resolutions: list = [16],  # List of resolutions with self-attention.
+        attn_resolutions: Sequence = (16,),  # List of resolutions with self-attention.
         dropout: float = 0.10,  # Dropout probability of intermediate activations.
         label_dropout: float = 0.0,  # Dropout probability of class labels for classifier-free guidance.
         embedding_type: str = "fourier",  # Timestep embedding type: 'positional' for DDPM++, 'fourier' for NCSN++.
         channel_mult_noise: int = 2,  # Timestep embedding size: 1 for DDPM++, 2 for NCSN++.
         encoder_type: str = "residual",  # Encoder architecture: 'standard' for DDPM++, 'residual' for NCSN++.
         decoder_type: str = "standard",  # Decoder architecture: 'standard' for both DDPM++ and NCSN++.
-        resample_filter: list = [
+        resample_filter: Sequence = (
             1,
             3,
             3,
             1,
-        ],  # Resampling filter: [1,1] for DDPM++, [1,3,3,1] for NCSN++.
+        ),  # Resampling filter: [1,1] for DDPM++, [1,3,3,1] for NCSN++.
         pretrained: str = "download",
         pixel_std: float = 0.75,
         device=None,
@@ -230,14 +231,16 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
-                self._train_on_minus_one_one = True  # Pretrained on [-1,1]s
+                self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
                 self.pixel_std = 0.5
             else:
                 ckpt = torch.load(pretrained, map_location=lambda storage, loc: storage)
-                self._train_on_minus_one_one = False
+                self._was_trained_on_minus_one_one = False
             self.load_state_dict(ckpt, strict=True)
+            self._train_on_minus_one_one = True  # Pretrained on [-1,1]s
+            self.pixel_std = 0.5
         else:
-            self._train_on_minus_one_one = False
+            self._was_trained_on_minus_one_one = False
         self.eval()
         if device is not None:
             self.to(device)
@@ -323,7 +326,7 @@ class NCSNpp(Denoiser):
         )
 
         # Rescale [0,1] input to [-1,-1]
-        if getattr(self, "_train_on_minus_one_one", False):
+        if getattr(self, "_was_trained_on_minus_one_one", False):
             x = (x - 0.5) * 2.0
             sigma = sigma * 2.0
         c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
@@ -342,7 +345,7 @@ class NCSNpp(Denoiser):
 
         D_x = D_x.to(dtype)
         # Rescale [-1,1] output to [0,-1]
-        if getattr(self, "_train_on_minus_one_one", False):
+        if getattr(self, "_was_trained_on_minus_one_one", False):
             return (D_x + 1.0) / 2.0
         else:
             return D_x

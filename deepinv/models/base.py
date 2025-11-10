@@ -1,5 +1,5 @@
+from __future__ import annotations
 import torch
-from typing import Union
 import numpy as np
 
 
@@ -33,11 +33,11 @@ class Denoiser(torch.nn.Module):
         :param torch.Tensor, float sigma: noise level.
         :returns: (:class:`torch.Tensor`) Denoised tensor.
         """
-        return NotImplementedError
+        raise NotImplementedError()
 
     @staticmethod
     def _handle_sigma(
-        sigma: Union[float, torch.Tensor],
+        sigma: float | torch.Tensor,
         batch_size: int = None,
         ndim: int = None,
         device: torch.device = None,
@@ -132,4 +132,5 @@ class Reconstructor(torch.nn.Module):
         :param deepinv.physics.Physics physics: forward model :math:`A`.
         :returns: (:class:`torch.Tensor`) reconstructed tensor.
         """
-        return NotImplementedError
+
+        raise NotImplementedError()

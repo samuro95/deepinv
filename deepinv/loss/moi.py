@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Union, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import torch
 
@@ -52,15 +52,17 @@ class MOILoss(Loss):
 
     def __init__(
         self,
-        physics: Optional[Union[list[Physics], Physics]] = None,
-        physics_generator: Optional[PhysicsGenerator] = None,
-        metric: Union[Metric, torch.nn.Module] = torch.nn.MSELoss(),
+        physics: list[Physics] | Physics | None = None,
+        physics_generator: PhysicsGenerator | None = None,
+        metric: Metric | torch.nn.Module | None = None,
         apply_noise: bool = True,
         weight: float = 1.0,
-        rng: Optional[torch.Generator] = None,
+        rng: torch.Generator | None = None,
         *args,
         **kwargs,
     ):
+        if metric is None:
+            metric = torch.nn.MSELoss()
         super(MOILoss, self).__init__(*args, **kwargs)
         self.name = "moi"
         self.physics = physics
@@ -165,14 +167,16 @@ class MOEILoss(EILoss, MOILoss):
     def __init__(
         self,
         transform: Transform,
-        physics: Optional[Union[list[Physics], Physics]] = None,
+        physics: list[Physics] | Physics | None = None,
         physics_generator: PhysicsGenerator = None,
-        metric: Union[Metric, torch.nn.Module] = torch.nn.MSELoss(),
+        metric: Metric | torch.nn.Module | None = None,
         apply_noise: bool = True,
         weight: float = 1.0,
         no_grad: bool = False,
-        rng: Optional[torch.Generator] = None,
+        rng: torch.Generator | None = None,
     ):
+        if metric is None:
+            metric = torch.nn.MSELoss()
         super().__init__(
             transform=transform,
             metric=metric,

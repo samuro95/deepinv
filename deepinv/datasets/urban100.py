@@ -1,4 +1,5 @@
 from typing import Callable
+from types import MappingProxyType
 import os
 from deepinv.datasets.utils import (
     calculate_md5_for_folder,
@@ -40,24 +41,28 @@ class Urban100HR(ImageFolder):
 
         >>> import shutil
         >>> from deepinv.datasets import Urban100HR
-        >>> dataset = Urban100HR(root="Urban100", download=True)  # download raw data at root and load dataset
+        >>> dataset = Urban100HR(root="./Urban100", download=True)  # download raw data at root and load dataset
         Dataset has been successfully downloaded.
         >>> print(dataset.check_dataset_exists())                      # check that raw data has been downloaded correctly
         True
         >>> print(len(dataset))                                        # check that we have 100 images
         100
-        >>> shutil.rmtree("Urban100")                             # remove raw data from disk
+        >>> shutil.rmtree("./Urban100")                             # remove raw data from disk
 
     """
 
-    archive_urls = {
-        "Urban100_HR.tar.gz": "https://huggingface.co/datasets/eugenesiow/Urban100/resolve/main/data/Urban100_HR.tar.gz",
-    }
+    _archive_urls = MappingProxyType(
+        {
+            "Urban100_HR.tar.gz": "https://huggingface.co/datasets/eugenesiow/Urban100/resolve/main/data/Urban100_HR.tar.gz",
+        }
+    )
 
     # for integrity of downloaded data
-    checksums = {
-        "Urban100_HR": "6e0640850d436a359e0a9baf5eabd27b",
-    }
+    _checksums = MappingProxyType(
+        {
+            "Urban100_HR": "6e0640850d436a359e0a9baf5eabd27b",
+        }
+    )
 
     def __init__(
         self,
@@ -79,7 +84,7 @@ class Urban100HR(ImageFolder):
                         f"The image folder already exists, thus the download is aborted. Please set `download=False` OR remove `{self.img_dir}`."
                     )
 
-                for filename, url in self.archive_urls.items():
+                for filename, url in self._archive_urls.items():
                     # download tar file from the Internet and save it locally
                     download_archive(
                         url=url,
@@ -92,14 +97,14 @@ class Urban100HR(ImageFolder):
                         print("Dataset has been successfully downloaded.")
                     else:
                         raise ValueError("There is an issue with the data downloaded.")
-            # stop the execution since the dataset is not available and we didn't download it
+            # stop the execution since the dataset is not available, and we didn't download it
             else:
                 raise RuntimeError(
                     f"Dataset not found at `{self.root}`. Please set `root` correctly (currently `root={self.root}`) OR set `download=True` (currently `download={download}`)."
                 )
 
         # Initialize ImageFolder
-        super().__init__(self.img_dir, transform=transform)
+        super().__init__(self.root, transform=transform)
 
     def check_dataset_exists(self) -> bool:
         """Verify that the image folders exist and contain all the images.
@@ -117,5 +122,5 @@ class Urban100HR(ImageFolder):
             return False
         return all(
             calculate_md5_for_folder(os.path.join(self.root, folder_name)) == checksum
-            for folder_name, checksum in self.checksums.items()
+            for folder_name, checksum in self._checksums.items()
         )

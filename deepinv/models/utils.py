@@ -1,8 +1,11 @@
+from __future__ import annotations
 import torch
+import torch.nn as nn
 import numpy as np
 from torch.nn.functional import silu
 from torch import Tensor
 from torch.nn import Linear, GroupNorm
+from itertools import chain
 
 
 def tensor2array(img):
@@ -31,12 +34,12 @@ def test_pad(model, L, modulo=16):
 
     Code borrowed from Kai Zhang https://github.com/cszn/DPIR/tree/master/models
     """
-    h, w = L.size()[-2:]
-    padding_bottom = int(np.ceil(h / modulo) * modulo - h)
-    padding_right = int(np.ceil(w / modulo) * modulo - w)
-    L = torch.nn.ReplicationPad2d((0, padding_right, 0, padding_bottom))(L)
+    spatials = L.size()[2:]
+    padding = tuple(int(np.ceil(s / modulo) * modulo - s) for s in spatials)
+    padding = tuple(chain.from_iterable((0, v) for v in reversed(padding)))
+    L = {2: nn.ReplicationPad2d, 3: nn.ReplicationPad3d}[len(spatials)](padding)(L)
     E = model(L)
-    E = E[..., :h, :w]
+    E = E[(...,) + tuple(slice(0, s) for s in spatials)]
     return E
 
 
@@ -78,6 +81,56 @@ def test_onesplit(model, L, refield=32, sf=1):
     return E
 
 
+# Code to build 2D or 3D variants of network components, based on the 'dim' keyword
+
+
+def fix_dim(dim: str | int) -> int:
+    """
+    Takes in dim, checks if it is in alloowed range (2 or 3) and returns dim as int
+    :param str, int dim: dimensionality; can be 2 or 3 and specified as str ('2d', '2', '3D', ...)
+    """
+    if isinstance(dim, str):
+        if len(dim) == 1:
+            dim_int = int(dim)
+        elif len(dim) == 2:
+            dim_int = int(dim[0])  # this silently allows other formats than f"{dim}d"..
+        else:  # pragma: no cover
+            raise ValueError(f"dim must be int, or '3', '2d', '3D', etc., got {dim}")
+    elif isinstance(dim, int):
+        dim_int = dim
+    else:  # pragma: no cover
+        raise ValueError(f"dim must be of type str or int, got {dim} ({type(dim)})")
+    if dim_int not in [2, 3]:  # pragma: no cover
+        raise ValueError(
+            f"Only 2D or 3D architectures are supported, got dim={dim_int}"
+        )
+    return dim_int
+
+
+def conv_nd(dim: int) -> nn.Module:
+    return {2: nn.Conv2d, 3: nn.Conv3d}[dim]
+
+
+def batchnorm_nd(dim: int) -> nn.Module:
+    return {2: nn.BatchNorm2d, 3: nn.BatchNorm3d}[dim]
+
+
+def conv_transpose_nd(dim: int) -> nn.Module:
+    return {2: nn.ConvTranspose2d, 3: nn.ConvTranspose3d}[dim]
+
+
+def maxpool_nd(dim: int) -> nn.Module:
+    return {2: nn.MaxPool2d, 3: nn.MaxPool3d}[dim]
+
+
+def avgpool_nd(dim: int) -> nn.Module:
+    return {2: nn.AvgPool2d, 3: nn.AvgPool3d}[dim]
+
+
+def instancenorm_nd(dim: int) -> nn.Module:
+    return {2: nn.InstanceNorm2d, 3: nn.InstanceNorm3d}[dim]
+
+
 # Basic blocks for defining the architecture of the models
 # Adapted from https://github.com/NVlabs/edm
 
@@ -116,7 +169,7 @@ class UpDownConv2d(torch.nn.Module):
         bias=True,
         up=False,
         down=False,
-        resample_filter=[1, 1],
+        resample_filter=(1, 1),
         fused_resample=False,
         init_mode="kaiming_normal",
         init_weight=1,
@@ -262,13 +315,17 @@ class UNetBlock(torch.nn.Module):
         dropout=0,
         skip_scale=1,
         eps=1e-5,
-        resample_filter=[1, 1],
+        resample_filter=(1, 1),
         resample_proj=False,
         adaptive_scale=True,
-        init=dict(),
-        init_zero=dict(init_weight=0),
+        init=None,
+        init_zero=None,
         init_attn=None,
     ):
+        if init is None:
+            init = dict()
+        if init_zero is None:
+            init_zero = dict(init_weight=0)
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels

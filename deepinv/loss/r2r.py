@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import Union
 import torch
 import math
 import warnings
@@ -103,12 +102,14 @@ class R2RLoss(Loss):
 
     def __init__(
         self,
-        metric: Union[Metric, torch.nn.Module] = torch.nn.MSELoss(),
+        metric: Metric | torch.nn.Module | None = None,
         noise_model: NoiseModel = None,
         alpha=0.15,
         sigma=None,
         eval_n_samples=5,
     ):
+        if metric is None:
+            metric = torch.nn.MSELoss()
         super(R2RLoss, self).__init__()
         self.name = "gr2r"
         self.metric = metric
