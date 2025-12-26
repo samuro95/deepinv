@@ -247,8 +247,6 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
-                self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
-                self.pixel_std = 0.5
             elif pretrained.lower() == "edm-ffhq64-uncond-vp" or (
                 pretrained.lower() == "download" and model_type == "ddpm"
             ):
@@ -257,13 +255,15 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
-                self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
-                self.pixel_std = 0.5
+            elif ".pt" in pretrained.lower():
+                url = get_weights_url(model_name="edm", file_name=pretrained)
+                ckpt = torch.hub.load_state_dict_from_url(
+                    url, map_location=lambda storage, loc: storage, file_name=pretrained
+                )
             else:
                 ckpt = torch.load(pretrained, map_location=lambda storage, loc: storage)
-                self._was_trained_on_minus_one_one = False
             self.load_state_dict(ckpt, strict=True)
-            self._train_on_minus_one_one = True  # Pretrained on [-1,1]s
+            self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
             self.pixel_std = 0.5
         else:
             self._was_trained_on_minus_one_one = False

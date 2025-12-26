@@ -50,13 +50,13 @@ class ScoreModelWrapper(Denoiser):
         self.clip_output = clip_output
         self.prediction_type = prediction_type
 
-        if scale_schedule is None:
+        if scale_schedule is None and sigma_schedule is not None:
             if variance_preserving:
                 if isinstance(sigma_schedule, Callable):
 
                     def scale_schedule(t):
                         t = self._handle_time_step(t)
-                        return (1 / (1 + self.sigma_t(t) ** 2)) ** 0.5
+                        return (1 / (1 + sigma_schedule(t) ** 2)) ** 0.5
 
                 else:
                     scale_schedule = 1.0 / (1 + sigma_schedule**2) ** 0.5
@@ -65,6 +65,16 @@ class ScoreModelWrapper(Denoiser):
                     scale_schedule = lambda t: 1.0
                 else:
                     scale_schedule = torch.ones_like(sigma_schedule)
+        elif sigma_schedule is None and scale_schedule is not None:
+            if variance_preserving:
+                if isinstance(scale_schedule, Callable):
+
+                    def sigma_schedule(t):
+                        t = self._handle_time_step(t)
+                        return (1/sigma_schedule(t)**2 - 1) ** 0.5
+
+                else:
+                    sigma_schedule = (1/sigma_schedule**2 - 1).clamp(min=0).sqrt()
 
         if isinstance(sigma_schedule, torch.Tensor):
             self.register_buffer("sigma_schedule", sigma_schedule)
@@ -252,7 +262,7 @@ class ScoreModelWrapper(Denoiser):
         timestep = self.time_from_sigma(sigma.squeeze())
         scale = self.get_schedule_value(self.scale_schedule, timestep, x.shape)
 
-        # Rescale input x from [0, 1] to model scale [-1, 1] and apply scaling following DDPM
+        # Rescale input x from [0, 1] to model scale [-1, 1] and apply scaling
         x = (x * 2 - 1) * scale
         # UNet forward
         pred = self.model(x, timestep, *args, **kwargs)
@@ -323,7 +333,7 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
         ), "Provide a diffusers model id. E.g., 'google/ddpm-cat-256'"
 
         try:
-            from diffusers import DiffusionPipeline, DDPMScheduler
+            from diffusers import DiffusionPipeline, DDPMScheduler, PNDMScheduler, DDIMScheduler
         except ImportError:
             raise ImportError(
                 "diffusers is not installed. Please install it via 'pip install diffusers'."
@@ -335,12 +345,43 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
         scheduler = pipeline.scheduler
         prediction_type = getattr(scheduler.config, "prediction_type", "epsilon")
 
-        assert isinstance(
-            scheduler, DDPMScheduler
-        ), "Currently, only DDPMScheduler is supported."
-        ac = scheduler.alphas_cumprod
-        scale_schedule = ac.sqrt()
-        sigma_schedule = (1 / ac - 1.0).clamp(min=0).sqrt()
+        # if isinstance(scheduler, DDPMScheduler):
+        #     ac = scheduler.alphas_cumprod
+        #     scale_schedule = ac.sqrt()
+        #    variance_preserving = True
+        #    sigma_schedule = None
+        #    variance_preserving = True
+        #    variance_exploding = False
+        
+        if isinstance(scheduler, (PNDMScheduler, DDPMScheduler, DDIMScheduler)):
+            
+            if scheduler.beta_schedule == 'scaled_linear':
+                a = np.sqrt(scheduler.config.beta_start)
+                b = np.sqrt(scheduler.config.beta_end) - a
+                
+                scale_schedule = lambda t: torch.exp(
+                                    - 0.5 * (((a + b * t)**3 - a**3) / (3 * b))
+                                )
+                def sigma_inverse(sigma):
+                    return ( (a**3 + 3*b*torch.log1p(sigma))**(1/3) - a ) / b
+
+            elif scheduler.beta_schedule == 'linear':
+                beta_min = scheduler.config.beta_start
+                beta_max = scheduler.config.beta_end
+                delta = beta_max - beta_min
+                
+                scale_schedule = lambda t: torch.exp(-0.5 * (beta_min * t + 0.5 * delta * t ** 2))
+                
+                def sigma_inverse(sigma):
+                    if abs(delta) < 1e-12:
+                        return torch.log1p(sigma) / beta_start
+                    return(-beta_start + torch.sqrt(beta_start**2 + 2 * delta * torch.log1p(sigma))) / delta
+            
+            else:
+                raise ValueError("only 'scaled_linear' and 'linear' schedule are supported for beta")
+            sigma_schedule = None
+            variance_preserving = True
+            variance_exploding = False
 
         super().__init__(
             score_model=model,
@@ -348,6 +389,9 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
             clip_output=clip_output,
             scale_schedule=scale_schedule,
             sigma_schedule=sigma_schedule,
+            variance_preserving = variance_preserving,
+            variance_exploding = variance_exploding,
+            sigma_inverse = sigma_inverse,
             device=device,
         )
 

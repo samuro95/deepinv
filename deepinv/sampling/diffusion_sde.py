@@ -937,8 +937,7 @@ class PosteriorDiffusion(Reconstructor):
         # Scale the output back to [0, 1]
         sample = solution.sample
         if self.minus_one_one:
-            sample = (sample.clamp_(-1, 1) + 1) / 2
-
+            sample = (sample + 1) / 2
         if get_trajectory:
             return sample, solution.trajectory
         else:
