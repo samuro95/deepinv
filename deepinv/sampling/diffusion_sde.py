@@ -342,7 +342,6 @@ class EDMDiffusionSDE(DiffusionSDE):
 
         if scale_t is None:
             if variance_preserving:
-
                 def scale_t(t):
                     t = self._handle_time_step(t)
                     return (1 / (1 + self.sigma_t(t) ** 2)) ** 0.5
@@ -753,6 +752,7 @@ class VariancePreservingDiffusion(SongDiffusionSDE):
         beta_min: float = 0.1,
         beta_max: float = 20,
         alpha: Callable | float = 1.0,
+        scaled_linear: bool = False,
         solver: BaseSDESolver = None,
         dtype=torch.float64,
         device=torch.device("cpu"),
@@ -762,12 +762,25 @@ class VariancePreservingDiffusion(SongDiffusionSDE):
 
         def beta_t(t: Tensor | float) -> Tensor:
             t = self._handle_time_step(t)
-            return beta_min + t * (beta_max - beta_min)
+            if not scaled_linear:
+                return beta_min + t * (beta_max - beta_min)
+            else:
+                beta_min_sqrt = np.sqrt(beta_min)
+                beta_max_sqrt = np.sqrt(beta_max)
+                return (beta_min_sqrt + t * (beta_max_sqrt - beta_min_sqrt)) ** 2
+            
 
         def B_t(t: Tensor | float) -> Tensor:
             t = self._handle_time_step(t)
-            return beta_min * t + 0.5 * t**2 * (beta_max - beta_min)
-
+            if not scaled_linear:
+                return beta_min * t + 0.5 * t**2 * (beta_max - beta_min)
+            else:
+                beta_min_sqrt = np.sqrt(beta_min)
+                beta_max_sqrt = np.sqrt(beta_max)
+                a = beta_min_sqrt
+                c = beta_max_sqrt - beta_min_sqrt
+                return (a**2) * t + a * c * t**2 + (c**2 / 3.0) * t**3
+            
         super().__init__(
             beta_t=beta_t,
             B_t=B_t,

@@ -43,19 +43,23 @@ class ScoreModelWrapper(Denoiser):
         variance_preserving: bool = False,
         variance_exploding: bool = False,
         T: float = 1.0,
+        takes_integer_time: bool = False,
+        n_timesteps: int = 1000,
         device: str | torch.device = "cpu",
     ):
         super().__init__()
         self.model = score_model
         self.clip_output = clip_output
         self.prediction_type = prediction_type
+        self.takes_integer_time = takes_integer_time
+        self.n_timesteps = n_timesteps
 
         if scale_schedule is None and sigma_schedule is not None:
             if variance_preserving:
                 if isinstance(sigma_schedule, Callable):
 
                     def scale_schedule(t):
-                        t = self._handle_time_step(t)
+                        t = self._handle_time_step(t, device=device)
                         return (1 / (1 + sigma_schedule(t) ** 2)) ** 0.5
 
                 else:
@@ -70,11 +74,11 @@ class ScoreModelWrapper(Denoiser):
                 if isinstance(scale_schedule, Callable):
 
                     def sigma_schedule(t):
-                        t = self._handle_time_step(t)
-                        return (1/sigma_schedule(t)**2 - 1) ** 0.5
+                        t = self._handle_time_step(t, device=device)
+                        return (1/scale_schedule(t)**2 - 1).clamp(min=0).sqrt()
 
                 else:
-                    sigma_schedule = (1/sigma_schedule**2 - 1).clamp(min=0).sqrt()
+                    sigma_schedule = (1/scale_schedule**2 - 1).clamp(min=0).sqrt()
 
         if isinstance(sigma_schedule, torch.Tensor):
             self.register_buffer("sigma_schedule", sigma_schedule)
@@ -88,6 +92,10 @@ class ScoreModelWrapper(Denoiser):
         self.sigma_inverse = sigma_inverse
         self.T = T
         self.to(device)
+
+    def _handle_time_step(self, t: torch.Tensor | float, device: str | torch.device = "cpu", dtype: torch.dtype = torch.float32) -> torch.Tensor:
+        t = torch.as_tensor(t, device=device, dtype=dtype)
+        return t
 
     def get_schedule_value(
         self,
@@ -104,7 +112,8 @@ class ScoreModelWrapper(Denoiser):
         """
 
         if isinstance(schedule, torch.Tensor):
-            val = schedule[t.long()]
+            time_idx = (t * (self.n_timesteps - 1) / self.T).long()
+            val = schedule[time_idx]
         else:
             val = schedule(t)
 
@@ -142,7 +151,7 @@ class ScoreModelWrapper(Denoiser):
 
     def time_from_sigma(self, sigma: torch.Tensor | float) -> torch.Tensor:
         r"""
-        Computes the time step `t` corresponding to a given noise level `sigma`.
+        Computes the continuous timestep :math:`t \in [0,T]` corresponding to a given noise level `sigma`.
 
         If an analytic inverse of the `sigma_schedule` is provided, it is used.
         Otherwise, a numeric inversion is performed (nearest neighbor for discrete schedules, binary search for continuous schedules).
@@ -159,13 +168,13 @@ class ScoreModelWrapper(Denoiser):
 
         # 2) If we have a discrete table, use nearest index.
         if isinstance(self.sigma_schedule, torch.Tensor):
-            sigmas = self.sigma_schedule  # [T]
+            sigmas = self.sigma_schedule
             sigma = sigma.to(device=sigmas.device, dtype=sigmas.dtype)
             if sigma.dim() == 0:
-                return torch.argmin((sigmas - sigma).abs())
+                return torch.argmin((sigmas - sigma).abs()) / ((self.n_timesteps - 1) * self.T)
             else:
                 diffs = (sigmas[None, :] - sigma[:, None]).abs()  # [B, T]
-                return torch.argmin(diffs, dim=1)
+                return torch.argmin(diffs, dim=1) / ((self.n_timesteps - 1) * self.T)
         else:
             # 3) Fallback: numeric inversion for continuous schedules (binary search).
             t_low = torch.zeros_like(sigma)
@@ -214,7 +223,10 @@ class ScoreModelWrapper(Denoiser):
         )
 
         # UNet forward
+        if self.takes_integer_time:
+            t = (t * (self.n_timesteps - 1)).long()
         pred = self.model(x, t, *args, return_dict=False, **kwargs)
+
         if isinstance(pred, (list, tuple)):
             pred = pred[0]
         pred = pred.to(dtype)
@@ -259,13 +271,15 @@ class ScoreModelWrapper(Denoiser):
         )
 
         sigma = sigma * 2  # since image is in [-1, 1] range in the model
-        timestep = self.time_from_sigma(sigma.squeeze())
-        scale = self.get_schedule_value(self.scale_schedule, timestep, x.shape)
-
+        t = self.time_from_sigma(sigma.squeeze())
+        scale = self.get_schedule_value(self.scale_schedule, t, x.shape)
         # Rescale input x from [0, 1] to model scale [-1, 1] and apply scaling
         x = (x * 2 - 1) * scale
         # UNet forward
-        pred = self.model(x, timestep, *args, **kwargs)
+        if self.takes_integer_time:
+            t = (t * (self.n_timesteps - 1)).long()
+        print(t, sigma)
+        pred = self.model(x, t, *args, **kwargs)
         if isinstance(pred, (list, tuple)):
             pred = pred[0]  # take the first output if multiple outputs are returned
         pred = pred.to(dtype)
@@ -279,6 +293,7 @@ class ScoreModelWrapper(Denoiser):
 
         # Rescale to [0, 1]
         x0 = (x0 + 1) / 2
+
         return x0
 
 
@@ -343,42 +358,31 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
 
         model = pipeline.unet
         scheduler = pipeline.scheduler
-        prediction_type = getattr(scheduler.config, "prediction_type", "epsilon")
-
-        # if isinstance(scheduler, DDPMScheduler):
-        #     ac = scheduler.alphas_cumprod
-        #     scale_schedule = ac.sqrt()
-        #    variance_preserving = True
-        #    sigma_schedule = None
-        #    variance_preserving = True
-        #    variance_exploding = False
+        prediction_type = scheduler.config.prediction_type
         
         if isinstance(scheduler, (PNDMScheduler, DDPMScheduler, DDIMScheduler)):
             
-            if scheduler.beta_schedule == 'scaled_linear':
-                a = np.sqrt(scheduler.config.beta_start)
-                b = np.sqrt(scheduler.config.beta_end) - a
-                
-                scale_schedule = lambda t: torch.exp(
-                                    - 0.5 * (((a + b * t)**3 - a**3) / (3 * b))
-                                )
-                def sigma_inverse(sigma):
-                    return ( (a**3 + 3*b*torch.log1p(sigma))**(1/3) - a ) / b
-
-            elif scheduler.beta_schedule == 'linear':
-                beta_min = scheduler.config.beta_start
-                beta_max = scheduler.config.beta_end
-                delta = beta_max - beta_min
-                
-                scale_schedule = lambda t: torch.exp(-0.5 * (beta_min * t + 0.5 * delta * t ** 2))
-                
-                def sigma_inverse(sigma):
-                    if abs(delta) < 1e-12:
-                        return torch.log1p(sigma) / beta_start
-                    return(-beta_start + torch.sqrt(beta_start**2 + 2 * delta * torch.log1p(sigma))) / delta
-            
+            if hasattr(scheduler, "alphas_cumprod"):
+                alphas_cumprod = scheduler.alphas_cumprod
+                scale_schedule = torch.sqrt(alphas_cumprod)
             else:
-                raise ValueError("only 'scaled_linear' and 'linear' schedule are supported for beta")
+                if scheduler.beta_schedule == 'scaled_linear':
+                    N = scheduler.config.num_train_timesteps
+                    beta_start = 0.5 * N * scheduler.config.beta_start
+                    beta_end = 0.5 * N * scheduler.config.beta_end 
+                    a = np.sqrt(beta_start)
+                    c = np.sqrt(beta_end) - a
+                    B_t = lambda t: (a**2) * t + a * c * t**2 + (c**2 / 3.0) * t**3
+                    scale_schedule = lambda t: torch.exp(-B_t(t))
+                elif scheduler.beta_schedule == 'linear':
+                    N = scheduler.config.num_train_timesteps
+                    beta_start = 0.5 * scheduler.config.beta_start * N
+                    beta_end = 0.5 * scheduler.config.beta_end * N
+                    delta = beta_end - beta_start
+                    scale_schedule = lambda t: torch.exp(-(beta_start * t + 0.5 * delta * t ** 2)) 
+                else:
+                    raise ValueError("only 'scaled_linear' and 'linear' schedule are supported for beta")
+            
             sigma_schedule = None
             variance_preserving = True
             variance_exploding = False
@@ -391,9 +395,16 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
             sigma_schedule=sigma_schedule,
             variance_preserving = variance_preserving,
             variance_exploding = variance_exploding,
-            sigma_inverse = sigma_inverse,
+            takes_integer_time = True,
+            n_timesteps = scheduler.config.num_train_timesteps,
             device=device,
         )
+
+        self.tokenizer = pipeline.tokenizer if hasattr(pipeline, "tokenizer") else None
+        self.text_encoder = pipeline.text_encoder if hasattr(pipeline, "text_encoder") else None    
+        self.vae = pipeline.vae if hasattr(pipeline, "vae") else None
+        self.vqvae = pipeline.vqvae if hasattr(pipeline, "vqvae") else None
+        self.scheduler = pipeline.scheduler if hasattr(pipeline, "scheduler") else None
 
     def forward(
         self,
