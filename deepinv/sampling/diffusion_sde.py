@@ -199,14 +199,16 @@ class DiffusionSDE(BaseSDE):
 
             def alpha(t: Tensor | float) -> float:
                 return alpha_value
+            
+        self.alpha = alpha
 
         def backward_drift(x, t, *args, **kwargs):
-            return -forward_drift(x, t) + ((1 + alpha(t)) / 2) * forward_diffusion(
+            return -forward_drift(x, t) + ((1 + self.alpha(t)) / 2) * forward_diffusion(
                 t
             ) ** 2 * self.score(x, t, *args, **kwargs)
 
         def backward_diffusion(t):
-            return (alpha(t) ** 0.5) * forward_diffusion(t)
+            return (self.alpha(t) ** 0.5) * forward_diffusion(t)
 
         super().__init__(
             drift=backward_drift,
@@ -216,8 +218,6 @@ class DiffusionSDE(BaseSDE):
             *args,
             **kwargs,
         )
-
-        self.alpha = alpha
         self.forward_drift = forward_drift
         self.forward_diffusion = forward_diffusion
         self.solver = solver

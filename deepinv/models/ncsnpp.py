@@ -88,6 +88,7 @@ class NCSNpp(Denoiser):
         label_dropout: float = 0.0,  # Dropout probability of class labels for classifier-free guidance.
         pretrained: str = "download",
         pixel_std: float = 0.75,
+        trained_on_minus_one_one: bool = False,
         device=None,
         **kwargs,
     ):
@@ -266,7 +267,7 @@ class NCSNpp(Denoiser):
             self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
             self.pixel_std = 0.5
         else:
-            self._was_trained_on_minus_one_one = False
+            self._was_trained_on_minus_one_one = trained_on_minus_one_one
         self.eval()
         if device is not None:
             self.to(device)
@@ -335,6 +336,7 @@ class NCSNpp(Denoiser):
         sigma: Tensor | float,
         class_labels: Tensor | None = None,
         augment_labels: Tensor | None = None,
+        precondition_type: str = "edm",
         *args,
         **kwargs,
     ):
@@ -357,10 +359,11 @@ class NCSNpp(Denoiser):
             sigma, batch_size=x.size(0), ndim=x.ndim, device=x.device, dtype=x.dtype
         )
 
-        # Rescale [0,1] input to [-1,-1]
+        # Rescale [0,1] input to [-1,1]
         if getattr(self, "_was_trained_on_minus_one_one", False):
             x = (x - 0.5) * 2.0
             sigma = sigma * 2.0
+        
         c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
         c_out = sigma * self.pixel_std / (sigma**2 + self.pixel_std**2).sqrt()
         c_in = 1 / (self.pixel_std**2 + sigma**2).sqrt()
@@ -376,8 +379,36 @@ class NCSNpp(Denoiser):
         D_x = c_skip * x + c_out * F_x
 
         D_x = D_x.to(dtype)
-        # Rescale [-1,1] output to [0,-1]
+        # Rescale [-1,1] output to [0,1]
         if getattr(self, "_was_trained_on_minus_one_one", False):
             return (D_x + 1.0) / 2.0
         else:
             return D_x
+        
+
+    def forward_denoise(
+        self,
+        x: Tensor,
+        sigma: Tensor | float,
+        class_labels: Tensor | None = None,
+        augment_labels: Tensor | None = None,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+        r"""
+        Run the denoiser on noisy image.
+
+        :param torch.Tensor x: noisy image
+        :param Union[torch.Tensor, float]  sigma: noise level
+        :param torch.Tensor class_labels: class labels
+        :param torch.Tensor augment_labels: augmentation labels
+        :return torch.Tensor: denoised image.
+        """
+        return self.forward(
+            x,
+            sigma,
+            class_labels=class_labels,
+            augment_labels=augment_labels,
+            *args,
+            **kwargs,
+        )
