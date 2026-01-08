@@ -46,6 +46,7 @@ class ScoreModelWrapper(Denoiser):
         takes_integer_time: bool = False,
         n_timesteps: int = 1000,
         device: str | torch.device = "cpu",
+        input_in_minus_one_one: bool = False,
     ):
         super().__init__()
         self.model = score_model
@@ -53,6 +54,7 @@ class ScoreModelWrapper(Denoiser):
         self.prediction_type = prediction_type
         self.takes_integer_time = takes_integer_time
         self.n_timesteps = n_timesteps
+        self.input_in_minus_one_one = input_in_minus_one_one
 
         if scale_schedule is None and sigma_schedule is not None:
             if variance_preserving:
@@ -269,16 +271,20 @@ class ScoreModelWrapper(Denoiser):
             device=device,
             dtype=dtype,
         )
-
-        sigma = sigma * 2  # since image is in [-1, 1] range in the model
+        if not self.input_in_minus_one_one:
+            sigma = sigma * 2  # since image is in [-1, 1] range in the model
+        
         t = self.time_from_sigma(sigma.squeeze())
         scale = self.get_schedule_value(self.scale_schedule, t, x.shape)
-        # Rescale input x from [0, 1] to model scale [-1, 1] and apply scaling
-        x = (x * 2 - 1) * scale
+
+        if not self.input_in_minus_one_one:
+            x = (x * 2 - 1) * scale
+        else:
+            x = x * scale
+        
         # UNet forward
         if self.takes_integer_time:
             t = (t * (self.n_timesteps - 1)).long()
-        print(t, sigma)
         pred = self.model(x, t, *args, **kwargs)
         if isinstance(pred, (list, tuple)):
             pred = pred[0]  # take the first output if multiple outputs are returned
@@ -291,8 +297,9 @@ class ScoreModelWrapper(Denoiser):
         if self.clip_output:
             x0 = x0.clamp(-1, 1)
 
-        # Rescale to [0, 1]
-        x0 = (x0 + 1) / 2
+        if not self.input_in_minus_one_one:
+            # Rescale to [0, 1]
+            x0 = (x0 + 1) / 2
 
         return x0
 
@@ -342,6 +349,8 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
         mode_id: str = None,
         clip_output: bool = True,
         device: str | torch.device = "cpu",
+        *args,
+        **kwargs,
     ):
         assert (
             mode_id is not None
@@ -398,6 +407,8 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
             takes_integer_time = True,
             n_timesteps = scheduler.config.num_train_timesteps,
             device=device,
+            *args,
+            **kwargs,
         )
 
         self.tokenizer = pipeline.tokenizer if hasattr(pipeline, "tokenizer") else None
