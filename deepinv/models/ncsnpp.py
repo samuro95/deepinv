@@ -89,6 +89,7 @@ class NCSNpp(Denoiser):
         pretrained: str = "download",
         pixel_std: float = 0.75,
         trained_on_minus_one_one: bool = False,
+        input_in_minus_one_one: bool = False,
         device=None,
         **kwargs,
     ):
@@ -268,6 +269,7 @@ class NCSNpp(Denoiser):
             self.pixel_std = 0.5
         else:
             self._was_trained_on_minus_one_one = trained_on_minus_one_one
+        self.input_in_minus_one_one = input_in_minus_one_one
         self.eval()
         if device is not None:
             self.to(device)
@@ -360,7 +362,7 @@ class NCSNpp(Denoiser):
         )
 
         # Rescale [0,1] input to [-1,1]
-        if getattr(self, "_was_trained_on_minus_one_one", False):
+        if (not getattr(self, "input_in_minus_one_one", False)) and getattr(self, "_was_trained_on_minus_one_one", False):
             x = (x - 0.5) * 2.0
             sigma = sigma * 2.0
         
@@ -380,7 +382,7 @@ class NCSNpp(Denoiser):
 
         D_x = D_x.to(dtype)
         # Rescale [-1,1] output to [0,1]
-        if getattr(self, "_was_trained_on_minus_one_one", False):
+        if (not getattr(self, "input_in_minus_one_one", False)) and getattr(self, "_was_trained_on_minus_one_one", False):
             return (D_x + 1.0) / 2.0
         else:
             return D_x
