@@ -91,6 +91,7 @@ class NCSNpp(Denoiser):
         pixel_std: float = 0.75,
         trained_on_minus_one_one: bool = False,
         input_in_minus_one_one: bool = False,
+        precondition_type: str = "edm",
         device=None,
         **kwargs,
     ):
@@ -133,6 +134,7 @@ class NCSNpp(Denoiser):
             init_attn=init_attn,
         )
         self.pixel_std = pixel_std
+        self.precondition_type = precondition_type
         # Mapping.
         self.map_noise = (
             PositionalEmbedding(num_channels=noise_channels, endpoint=True)
@@ -250,6 +252,7 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
+                self.precondition_type = "edm"
             elif pretrained.lower() == "edm-ffhq64-uncond-vp" or (
                 pretrained.lower() == "download" and model_type == "ddpm"
             ):
@@ -258,6 +261,7 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
+                self.precondition_type = "edm"
             elif ".pt" in pretrained.lower():
                 url = get_weights_url(model_name="edm", file_name=pretrained)
                 ckpt = torch.hub.load_state_dict_from_url(
@@ -265,6 +269,10 @@ class NCSNpp(Denoiser):
                 )
             else:
                 ckpt = torch.load(pretrained, map_location=lambda storage, loc: storage)
+                if "ve" in pretrained.lower() and "baseline" in pretrained.lower():
+                    self.precondition_type = "ve-baseline"
+                elif "vp" in pretrained.lower() and "baseline" in pretrained.lower():
+                    self.precondition_type = "vp-baseline"
             self.load_state_dict(ckpt, strict=True)
             self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
             self.pixel_std = 0.5
@@ -339,7 +347,6 @@ class NCSNpp(Denoiser):
         sigma: Tensor | float,
         class_labels: Tensor | None = None,
         augment_labels: Tensor | None = None,
-        precondition_type: str = "edm",
         *args,
         **kwargs,
     ):
@@ -367,10 +374,18 @@ class NCSNpp(Denoiser):
             x = (x - 0.5) * 2.0
             sigma = sigma * 2.0
         
-        c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
-        c_out = sigma * self.pixel_std / (sigma**2 + self.pixel_std**2).sqrt()
-        c_in = 1 / (self.pixel_std**2 + sigma**2).sqrt()
-        c_noise = sigma.log() / 4
+        if self.precondition_type == "edm":
+            c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
+            c_out = sigma * self.pixel_std / (sigma**2 + self.pixel_std**2).sqrt()
+            c_in = 1 / (self.pixel_std**2 + sigma**2).sqrt()
+            c_noise = sigma.log() / 4
+        elif self.precondition_type == "ve-baseline":
+            c_skip = 1
+            c_out = sigma
+            c_in = 1
+            c_noise = (sigma/2).log()
+        else:
+            raise NotImplementedError(f"Preconditioning type {self.precondition_type} not implemented.")
 
         F_x = self.forward_unet(
             c_in * x,
