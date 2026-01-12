@@ -32,7 +32,7 @@ from .varnet import VarNet
 from .modl import MoDL
 from .multispectral import PanNet
 from .unet import UNet
-from .ncsnpp import NCSNpp
+from .ncsnpp import NCSNpp, ADM
 from .guided_diffusion import ADMUNet
 from .precond import EDMPrecond
 from .ram import RAM

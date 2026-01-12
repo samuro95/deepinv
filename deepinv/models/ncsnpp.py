@@ -7,6 +7,7 @@ from .utils import (
     FourierEmbedding,
     UNetBlock,
     UpDownConv2d,
+    ADMLinear,
 )
 from .base import Denoiser
 from torch.nn import Linear, GroupNorm
@@ -332,6 +333,209 @@ class NCSNpp(Denoiser):
                 x = block(x, emb)
         return aux
 
+    def forward(
+        self,
+        x: Tensor,
+        sigma: Tensor | float,
+        class_labels: Tensor | None = None,
+        augment_labels: Tensor | None = None,
+        precondition_type: str = "edm",
+        *args,
+        **kwargs,
+    ):
+        r"""
+        Run the denoiser on noisy image.
+
+        :param torch.Tensor x: noisy image
+        :param Union[torch.Tensor, float]  sigma: noise level
+        :param torch.Tensor class_labels: class labels
+        :param torch.Tensor augment_labels: augmentation labels
+        :return torch.Tensor: denoised image.
+        """
+        dtype = x.dtype
+        x = x.to(torch.float32)
+
+        if class_labels is not None:
+            class_labels = class_labels.to(torch.float32)
+
+        sigma = self._handle_sigma(
+            sigma, batch_size=x.size(0), ndim=x.ndim, device=x.device, dtype=x.dtype
+        )
+
+        # Rescale [0,1] input to [-1,1]
+        if (not getattr(self, "input_in_minus_one_one", False)) and getattr(self, "_was_trained_on_minus_one_one", False):
+            x = (x - 0.5) * 2.0
+            sigma = sigma * 2.0
+        
+        c_skip = self.pixel_std**2 / (sigma**2 + self.pixel_std**2)
+        c_out = sigma * self.pixel_std / (sigma**2 + self.pixel_std**2).sqrt()
+        c_in = 1 / (self.pixel_std**2 + sigma**2).sqrt()
+        c_noise = sigma.log() / 4
+
+        F_x = self.forward_unet(
+            c_in * x,
+            c_noise.flatten(),
+            class_labels=class_labels,
+            augment_labels=augment_labels,
+        )
+
+        D_x = c_skip * x + c_out * F_x
+
+        D_x = D_x.to(dtype)
+        # Rescale [-1,1] output to [0,1]
+        if (not getattr(self, "input_in_minus_one_one", False)) and getattr(self, "_was_trained_on_minus_one_one", False):
+            return (D_x + 1.0) / 2.0
+        else:
+            return D_x
+        
+
+    def forward_denoise(
+        self,
+        x: Tensor,
+        sigma: Tensor | float,
+        class_labels: Tensor | None = None,
+        augment_labels: Tensor | None = None,
+        *args,
+        **kwargs,
+    ) -> Tensor:
+        r"""
+        Run the denoiser on noisy image.
+
+        :param torch.Tensor x: noisy image
+        :param Union[torch.Tensor, float]  sigma: noise level
+        :param torch.Tensor class_labels: class labels
+        :param torch.Tensor augment_labels: augmentation labels
+        :return torch.Tensor: denoised image.
+        """
+        return self.forward(
+            x,
+            sigma,
+            class_labels=class_labels,
+            augment_labels=augment_labels,
+            *args,
+            **kwargs,
+        )
+
+
+class ADM(Denoiser):
+    def __init__(self,
+        img_resolution = 64,                     # Image resolution at input/output.
+        in_channels = 3,                        # Number of color channels at input.
+        out_channels = 3,                       # Number of color channels at output.
+        label_dim           = 1000,            # Number of class labels, 0 = unconditional.
+        augment_dim         = 0,            # Augmentation label dimensionality, 0 = no augmentation.
+
+        model_channels      = 192,          # Base multiplier for the number of channels.
+        channel_mult        = [1,2,3,4],    # Per-resolution multipliers for the number of channels.
+        channel_mult_emb    = 4,            # Multiplier for the dimensionality of the embedding vector.
+        num_blocks          = 3,            # Number of residual blocks per resolution.
+        attn_resolutions    = [32,16,8],    # List of resolutions with self-attention.
+        dropout             = 0.10,         # List of resolutions with self-attention.
+        label_dropout       = 0,            # Dropout probability of class labels for classifier-free guidance.
+        pretrained: str = "download",
+        pixel_std: float = 0.75,
+        trained_on_minus_one_one: bool = False,
+        input_in_minus_one_one: bool = False,
+        device=None,
+    ):  
+        super().__init__()
+
+        self.pixel_std = pixel_std
+
+        self.label_dropout = label_dropout
+        emb_channels = model_channels * channel_mult_emb
+        init = dict(init_mode='kaiming_uniform', init_weight=np.sqrt(1/3), init_bias=np.sqrt(1/3))
+        init_zero = dict(init_mode='kaiming_uniform', init_weight=0, init_bias=0)
+        block_kwargs = dict(emb_channels=emb_channels, channels_per_head=64, dropout=dropout, init=init, init_zero=init_zero)
+
+        # Mapping.
+        self.map_noise = PositionalEmbedding(num_channels=model_channels)
+        self.map_augment = ADMLinear(in_features=augment_dim, out_features=model_channels, bias=False, **init_zero) if augment_dim else None
+        self.map_layer0 = ADMLinear(in_features=model_channels, out_features=emb_channels, **init)
+        self.map_layer1 = ADMLinear(in_features=emb_channels, out_features=emb_channels, **init)
+        self.map_label = ADMLinear(in_features=label_dim, out_features=emb_channels, bias=False, init_mode='kaiming_normal', init_weight=np.sqrt(label_dim)) if label_dim else None
+
+        # Encoder.
+        self.enc = torch.nn.ModuleDict()
+        cout = in_channels
+        for level, mult in enumerate(channel_mult):
+            res = img_resolution >> level
+            if level == 0:
+                cin = cout
+                cout = model_channels * mult
+                self.enc[f'{res}x{res}_conv'] = UpDownConv2d(in_channels=cin, out_channels=cout, kernel=3, **init)
+            else:
+                self.enc[f'{res}x{res}_down'] = UNetBlock(in_channels=cout, out_channels=cout, down=True, **block_kwargs)
+            for idx in range(num_blocks):
+                cin = cout
+                cout = model_channels * mult
+                self.enc[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=(res in attn_resolutions), **block_kwargs)
+        skips = [block.out_channels for block in self.enc.values()]
+
+        # Decoder.
+        self.dec = torch.nn.ModuleDict()
+        for level, mult in reversed(list(enumerate(channel_mult))):
+            res = img_resolution >> level
+            if level == len(channel_mult) - 1:
+                self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, attention=True, **block_kwargs)
+                self.dec[f'{res}x{res}_in1'] = UNetBlock(in_channels=cout, out_channels=cout, **block_kwargs)
+            else:
+                self.dec[f'{res}x{res}_up'] = UNetBlock(in_channels=cout, out_channels=cout, up=True, **block_kwargs)
+            for idx in range(num_blocks + 1):
+                cin = cout + skips.pop()
+                cout = model_channels * mult
+                self.dec[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=(res in attn_resolutions), **block_kwargs)
+        self.out_norm = GroupNorm(num_channels=cout, num_groups=32, eps=1e-5)
+        self.out_conv = UpDownConv2d(in_channels=cout, out_channels=out_channels, kernel=3, **init_zero)
+
+        if pretrained is not None:
+            if pretrained.lower() == "download":
+                name = "adm-imagenet64-cond.pt"
+                url = get_weights_url(model_name="edm", file_name=name)
+                ckpt = torch.hub.load_state_dict_from_url(
+                    url, map_location=lambda storage, loc: storage, file_name=name
+                )
+            else:
+                ckpt = torch.load(pretrained, map_location=lambda storage, loc: storage)
+            self.load_state_dict(ckpt, strict=True)
+            self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
+            self.pixel_std = 0.5
+        else:
+            self._was_trained_on_minus_one_one = trained_on_minus_one_one
+        self.input_in_minus_one_one = input_in_minus_one_one
+        self.eval()
+        if device is not None:
+            self.to(device)
+            self.device = device
+
+    def forward_unet(self, x, noise_labels, class_labels, augment_labels=None):
+        # Mapping.
+        emb = self.map_noise(noise_labels)
+        if self.map_augment is not None and augment_labels is not None:
+            emb = emb + self.map_augment(augment_labels)
+        emb = silu(self.map_layer0(emb))
+        emb = self.map_layer1(emb)
+        if self.map_label is not None:
+            tmp = class_labels
+            if self.training and self.label_dropout:
+                tmp = tmp * (torch.rand([x.shape[0], 1], device=x.device) >= self.label_dropout).to(tmp.dtype)
+            emb = emb + self.map_label(tmp)
+        emb = silu(emb)
+
+        # Encoder.
+        skips = []
+        for block in self.enc.values():
+            x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
+            skips.append(x)
+
+        # Decoder.
+        for block in self.dec.values():
+            if x.shape[1] != block.in_channels:
+                x = torch.cat([x, skips.pop()], dim=1)
+            x = block(x, emb)
+        x = self.out_conv(silu(self.out_norm(x)))
+        return x
+    
     def forward(
         self,
         x: Tensor,

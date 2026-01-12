@@ -413,6 +413,7 @@ class DiffusersDenoiserWrapper(ScoreModelWrapper):
 
         self.tokenizer = pipeline.tokenizer if hasattr(pipeline, "tokenizer") else None
         self.text_encoder = pipeline.text_encoder if hasattr(pipeline, "text_encoder") else None    
+        self.bert = pipeline.bert if hasattr(pipeline, "bert") else None    
         self.vae = pipeline.vae if hasattr(pipeline, "vae") else None
         self.vqvae = pipeline.vqvae if hasattr(pipeline, "vqvae") else None
         self.scheduler = pipeline.scheduler if hasattr(pipeline, "scheduler") else None
