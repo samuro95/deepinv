@@ -2,17 +2,17 @@ from __future__ import annotations
 import torch
 from torch.nn.functional import silu
 import numpy as np
-from .utils import (
+from deepinv.models.utils import (
     PositionalEmbedding,
     FourierEmbedding,
     UNetBlock,
     UpDownConv2d,
     ADMLinear,
+    get_weights_url
 )
-from .base import Denoiser
+from deepinv.models.base import Denoiser
 from torch.nn import Linear, GroupNorm
 from torch import Tensor
-from .utils import get_weights_url
 from typing import Sequence
 
 
@@ -267,8 +267,6 @@ class NCSNpp(Denoiser):
                 ckpt = torch.hub.load_state_dict_from_url(
                     url, map_location=lambda storage, loc: storage, file_name=pretrained
                 )
-            else:
-                ckpt = torch.load(pretrained, map_location=lambda storage, loc: storage)
                 if "ve" in pretrained.lower() and "baseline" in pretrained.lower():
                     self.precondition_type = "ve-baseline"
                 elif "vp" in pretrained.lower() and "baseline" in pretrained.lower():
