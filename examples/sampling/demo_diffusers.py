@@ -18,12 +18,10 @@ from deepinv.models.wrapper import DiffusersDenoiserWrapper
 
 if torch.cuda.is_available():
     device = "cuda"
-elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-    device = "mps" 
 else:
     device = "cpu"
-dtype = torch.float32
 figsize = 2.5
+dtype = torch.float32
 
 from deepinv.sampling import (
     PosteriorDiffusion,
