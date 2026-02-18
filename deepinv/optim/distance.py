@@ -195,56 +195,71 @@ class IndicatorL2Distance(Distance):
 
 class PoissonLikelihoodDistance(Distance):
     r"""
-    (Negative) Log-likelihood of the Poisson distribution.
+    Per-sample Poisson data fidelity (generalized KL), summed over non-batch dims:
 
-    .. math::
+        D(y||lam) = sum_i [ lam_i - y_i log(lam_i) ]   (+ const(y) optional)
 
-        \distance{y}{x} =  \sum_i y_i \log(y_i / x_i) + x_i - y_i
-
-
-    .. note::
-
-        The function is not Lipschitz smooth w.r.t. :math:`x` in the absence of background (:math:`\beta=0`).
-
-    :param float gain: gain of the measurement :math:`y`. Default: 1.0.
-    :param float bkg: background level :math:`\beta`. Default: 0.
-    :param bool denormalize: if True, the measurement is divided by the gain. By default, in the
-        :class:`deepinv.physics.PoissonNoise`, the measurements are multiplied by the gain after being sampled by
-        the Poisson distribution. Default: True.
+    lam = x/gain + bkg  must be > 0.
     """
 
-    def __init__(self, gain: float = 1.0, bkg: float = 0, denormalize: bool = False):
+    def __init__(
+        self,
+        gain: float = 1.0,
+        bkg: float = 0.0,
+        denormalize: bool = False,
+        floor_input: bool = False,
+        epsilon: float = 1e-12,
+        include_y_log_y: bool = False,  # adds y log y - y term (constant wrt x)
+    ):
         super().__init__()
         self.bkg = bkg
         self.gain = gain
         self.denormalize = denormalize
+        self.floor_input = floor_input
+        self.epsilon = epsilon
+        self.include_y_log_y = include_y_log_y
 
-    def fn(self, x: torch.Tensor, y: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        r"""
-        Computes the Kullback-Leibler divergence
+    def fn(self, x: torch.Tensor, y: torch.Tensor, gain: torch.Tensor | float = None, *args, **kwargs) -> torch.Tensor:
+        self.update_parameters(gain=gain, **kwargs)
 
-        :param torch.Tensor x: Variable :math:`x` at which the distance is computed.
-        :param torch.Tensor y: Observation :math:`y`.
-        """
         if self.denormalize:
             y = y / self.gain
-        return (-y * torch.log(x / self.gain + self.bkg)).flatten().sum() + (
-            (x / self.gain) + self.bkg - y
-        ).reshape(x.shape[0], -1).sum(dim=1)
 
-    def grad(self, x: torch.Tensor, y: torch.Tensor, *args, **kwargs) -> torch.Tensor:
-        r"""
-        Gradient of the Kullback-Leibler divergence
+        if self.floor_input:
+            x = x.clamp_min(0.0)
 
-        :param torch.Tensor x: signal :math:`x` at which the function is computed.
-        :param torch.Tensor y: measurement :math:`y`.
-        """
+        lam = (x / self.gain) + self.bkg
+        lam = lam.clamp_min(self.epsilon)
+
+        # per-entry loss, safe at y=0 because xlogy(0, lam)=0
+        loss_px = lam - torch.special.xlogy(y, lam)
+
+        if self.include_y_log_y:
+            # exact: y log(y/lam) + lam - y
+            y_safe = y.clamp_min(self.epsilon)
+            loss_px = loss_px + torch.special.xlogy(y, y_safe) - y
+
+        # sum over all non-batch dims -> (B,)
+        return loss_px.reshape(x.shape[0], -1).sum(dim=1)
+
+    def grad(self, x: torch.Tensor, y: torch.Tensor, gain: torch.Tensor | float = None, *args, **kwargs) -> torch.Tensor:
+        self.update_parameters(gain=gain, **kwargs)
+
         if self.denormalize:
             y = y / self.gain
-        return self.gain * (1 - y / (x / self.gain + self.bkg))
+
+        if self.floor_input:
+            x = x.clamp_min(0.0)
+
+        lam = (x / self.gain) + self.bkg
+        lam = lam.clamp_min(self.epsilon)
+
+        # gradient wrt x for lam = x/gain + bkg:
+        # d/dx [lam - y log(lam)] = (1 - y/lam) * (1/gain)
+        return (1.0 - y / lam) * (1.0 / self.gain)
 
     def prox(
-        self, x: torch.Tensor, y: torch.Tensor, *args, gamma: float = 1.0, **kwargs
+        self, x: torch.Tensor, y: torch.Tensor, gain : torch.Tensor | float = None, *args, gamma: float = 1.0, **kwargs
     ) -> torch.Tensor:
         r"""
         Proximal operator of the Kullback-Leibler divergence
@@ -253,6 +268,7 @@ class PoissonLikelihoodDistance(Distance):
         :param torch.Tensor y: measurement :math:`y`.
         :param float gamma: proximity operator step size.
         """
+        self.update_parameters(gain=gain, **kwargs)
         if self.denormalize:
             y = y / self.gain
         out = (

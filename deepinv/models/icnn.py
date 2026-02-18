@@ -97,9 +97,10 @@ class ICNN(nn.Module):
         )
 
         # one final conv layer with nonnegative weights
+        # output one channel so the potential is scalar per sample
         self.final_conv = conv(
             self.n_filters,
-            self.n_in_channels,
+            1,
             self.kernel_size,
             stride=1,
             padding=self.padding,
@@ -138,8 +139,7 @@ class ICNN(nn.Module):
                 negative_slope=self.negative_slope,
             )
         z = self.final_conv(z)
-        z_avg = self.avgpool(z.size()[2:])(z).view(z.size()[0], -1)
-
+        z_avg = self.avgpool(z.size()[2:])(z).view(z.size()[0], -1).squeeze(1)
         return z_avg + 0.5 * self.strong_convexity * torch.linalg.vector_norm(
             x, dim=tuple(range(1, self.dim + 2)), ord=2
         ).pow(2)

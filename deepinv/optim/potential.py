@@ -17,6 +17,12 @@ class Potential(nn.Module):
         super().__init__()
         self._fn = fn
 
+    def update_parameters(self, **kwargs):
+        for key, value in kwargs.items():
+            if value is None or key not in self._buffers:
+                continue
+            self._buffers[key] = value
+
     def fn(self, x, *args, **kwargs):
         r"""
         Computes the value of the potential :math:`h(x)`.

@@ -667,7 +667,7 @@ def scatter_plot(
         return fig
 
 
-def plot_curves(metrics, save_dir=None, show=True):
+def plot_curves(metrics, save_dir=None, show=True, return_fig=False, return_axs=False):
     r"""
     Plots the metrics of a Plug-and-Play algorithm.
 
@@ -729,6 +729,12 @@ def plot_curves(metrics, save_dir=None, show=True):
         plt.savefig(save_dir / "curves.png")
     if show:
         plt.show()
+    if return_fig and return_axs:
+        return fig, axs
+    elif return_fig:
+        return fig
+    elif return_axs:
+        return axs
 
 
 def plot_parameters(model, init_params=None, save_dir=None, show=True):

@@ -308,6 +308,7 @@ class Trainer:
     non_blocking_transfers: bool = (
         True  # Use non-blocking host-to-device transfers when DataLoader has pin_memory=True: https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html
     )
+    show_plot : bool = False
 
     def __post_init__(self):
         if self.display_losses_eval is not None:
@@ -1139,7 +1140,7 @@ class Trainer:
             plot(
                 imgs,
                 titles=titles,
-                show=self.plot_images,
+                show=self.show_plot,
                 return_fig=True,
                 rescale_mode=self.rescale_mode,
             )
@@ -1174,11 +1175,18 @@ class Trainer:
             self.img_counter += imgs[0].size(0)
 
         if self.conv_metrics is not None:
-            plot_curves(
+            fig = plot_curves(
                 self.conv_metrics,
                 save_dir=f"{self.save_folder_im}/convergence_metrics/",
-                show=True,
+                return_fig=True,
+                show=self.show_plot,
             )
+            if self.wandb_vis:
+                import wandb
+                log_dict_post_epoch = {}
+                images = wandb.Image(fig)
+                log_dict_post_epoch[post_str + "curves"] = images
+                wandb.log(log_dict_post_epoch, step=epoch)
             self.conv_metrics = None
 
     def save_model(self, filename, epoch, state=None):

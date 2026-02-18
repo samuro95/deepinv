@@ -558,7 +558,13 @@ class PoissonNoise(NoiseModel):
 
             z = x / gain
 
-        y = torch.poisson(z, generator=self.rng)
+        if z.device.type == "mps":
+            # NOTE: torch.poisson is not supported on MPS devices, so we move the tensor to the CPU before applying the Poisson noise and then move it back to the original device.
+            z = z.cpu()
+            y = torch.poisson(z, generator=self.rng)
+            y = y.to(x.device)
+        else:
+            y = torch.poisson(z, generator=self.rng)
         if self.normalize:
             y = y * gain
         return y

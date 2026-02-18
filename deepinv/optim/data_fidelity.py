@@ -637,9 +637,9 @@ class PoissonLikelihood(DataFidelity):
     :param bool denormalize: if True, the measurement is multiplied by the gain. Default: True.
     """
 
-    def __init__(self, gain: float = 1.0, bkg: float = 0, denormalize: bool = True):
+    def __init__(self, gain: float = 1.0, bkg: float = 0, denormalize: bool = True, **kwargs):
         super().__init__()
-        self.d = PoissonLikelihoodDistance(gain=gain, bkg=bkg, denormalize=denormalize)
+        self.d = PoissonLikelihoodDistance(gain=gain, bkg=bkg, denormalize=denormalize, **kwargs)
         self.bkg = bkg
         self.gain = gain
         self.normalize = denormalize
