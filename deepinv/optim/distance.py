@@ -228,18 +228,17 @@ class PoissonLikelihoodDistance(Distance):
         if self.floor_input:
             x = x.clamp_min(0.0)
 
-        lam = (x / self.gain) + self.bkg
-        lam = lam.clamp_min(self.epsilon)
-
-        # per-entry loss, safe at y=0 because xlogy(0, lam)=0
-        loss_px = lam - torch.special.xlogy(y, lam)
-
+        x_denormalized = x / self.gain
+    
         if self.include_y_log_y:
-            # exact: y log(y/lam) + lam - y
-            y_safe = y.clamp_min(self.epsilon)
-            loss_px = loss_px + torch.special.xlogy(y, y_safe) - y
+            lam = y / x_denormalized + self.bkg
+            lam = lam.clamp_min(self.epsilon)
+            loss_px = x_denormalized - y + torch.special.xlogy(y, lam)
+        else:
+            lam = x_denormalized + self.bkg
+            lam = lam.clamp_min(self.epsilon)
+            loss_px = x_denormalized - torch.special.xlogy(y, lam)
 
-        # sum over all non-batch dims -> (B,)
         return loss_px.reshape(x.shape[0], -1).sum(dim=1)
 
     def grad(self, x: torch.Tensor, y: torch.Tensor, gain: torch.Tensor | float = None, *args, **kwargs) -> torch.Tensor:
@@ -254,8 +253,6 @@ class PoissonLikelihoodDistance(Distance):
         lam = (x / self.gain) + self.bkg
         lam = lam.clamp_min(self.epsilon)
 
-        # gradient wrt x for lam = x/gain + bkg:
-        # d/dx [lam - y log(lam)] = (1 - y/lam) * (1/gain)
         return (1.0 - y / lam) * (1.0 / self.gain)
 
     def prox(
