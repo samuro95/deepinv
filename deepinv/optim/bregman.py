@@ -133,7 +133,7 @@ class BurgEntropy(Bregman):
         :param torch.Tensor x: Variable :math:`x` at which the conjugate is computed.
         :return: (torch.Tensor) conjugate potential :math:`\phi^*(y)`.
         """
-        n = torch.shape(x.reshape(x.shape[0], -1))[-1]
+        n = x.reshape(x.shape[0], -1).shape[-1]
         return -torch.sum(torch.log(-x).reshape(x.shape[0], -1), dim=-1) - n
 
     def grad(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
@@ -153,6 +153,25 @@ class BurgEntropy(Bregman):
         :return: (torch.Tensor) gradient :math:`\nabla_x h^*`, computed in :math:`x`.
         """
         return -1 / x
+    
+
+class ConjBurgEntropy(Bregman):
+
+    def __init__(self):
+        super().__init__()
+
+    def fn(self, x: torch.Tensor) -> torch.Tensor:
+        n = x.reshape(x.shape[0], -1).shape[-1]
+        return -torch.sum(torch.log(-x).reshape(x.shape[0], -1), dim=-1) - n
+
+    def conjugate(self, x: torch.Tensor) -> torch.Tensor:
+        return -torch.sum(torch.log(x).reshape(x.shape[0], -1), dim=-1)
+
+    def grad(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        return - 1 / x
+
+    def grad_conj(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        return - 1 / x
 
 
 class NegEntropy(Bregman):

@@ -56,7 +56,7 @@ from .optim_iterators import (
 )
 from .epll import EPLL
 from .dpir import DPIR
-from .bregman import Bregman, BurgEntropy, NegEntropy, BregmanL2, Bregman_ICNN
+from .bregman import Bregman, BurgEntropy, NegEntropy, BregmanL2, Bregman_ICNN, ConjBurgEntropy
 from .potential import Potential
 from .distance import (
     Distance,

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
-
+import warnings
 from deepinv.optim.potential import Potential
 from deepinv.models.tv import TVDenoiser
 from deepinv.models.wavdict import WaveletDenoiser, WaveletDictDenoiser
@@ -716,3 +716,120 @@ class L12Prior(Prior):
         # 1 - gamma/max(z, gamma) = relu(z - gamma) / z, adding 1e-12 to avoid division by 0
         z = torch.nn.functional.relu(z - gamma) / (z + 1e-12)
         return z * x
+
+
+class RidgeRegularizerPrior(Prior):
+    r"""
+    (Weakly) Convex Ridge Regularizer :math:`\reg{x}=\sum_{c} \psi_c(W_c x)`
+
+    The (W)CRR was introduced by :footcite:t:`goujon2023neural` and :footcite:t:`goujon2024learning`.
+
+    See :class:`deepinv.models.RidgeRegularizer` for more details on the model.
+
+    :param int in_channels: Number of input channels (`1` for gray valued images, `3` for color images). Default: `3`
+    :param float weak_convexity: Weak convexity of the regularizer. Set to `0.0` for a convex regularizer and to `1.0` for a 1-weakly convex regularizer.
+        Default: `0.0`
+    :param list of int nb_channels: List of ints taking the hidden number of channels in the multiconvolution. Default: `[4, 8, 64]`
+    :param list of int filter_sizes: List of ints taking the kernel sizes of the convolution. Default: `[5,5,5]`
+    :param str device: Device for the weights. Default: `"cpu"`
+    :param str, None pretrained: use pretrained weights. If ``pretrained=None``, the weights will be initialized at random
+        using Pytorch's default initialization. If ``pretrained='download'``, the weights will be downloaded from an
+        online repository (only available for the default architecture with 3 or 1 input/output channels).
+        Finally, ``pretrained`` can also be set as a path to the user's own pretrained weights.
+        See :ref:`pretrained-weights <pretrained-learned-reg>` for more details.
+    :param bool warn_output_scaling: warn if `weak_convexity>0` and the output scaling (:math:`\log(\alpha)` in the above description) is not zero. This case
+        destroys the weak convexity constant defined by teh `weak_convexity` argument. Default: `True`
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        weak_convexity: float = 0.0,
+        nb_channels: tuple[int, ...] = (4, 8, 64),
+        filter_sizes: tuple[int, ...] = (5, 5, 5),
+        device: str = "cpu",
+        pretrained: str = "download",
+        warn_output_scaling: bool = True,
+    ):  
+        super(RidgeRegularizerPrior, self).__init__()
+        from deepinv.models import RidgeRegularizer
+        self.model = RidgeRegularizer(in_channels, weak_convexity, nb_channels, filter_sizes, device, pretrained, warn_output_scaling)
+
+    def grad(self, x, *args, get_energy=False, **kwargs):
+        r"""
+        Calculates the gradient of the regularizer at :math:`x`.
+
+        :param torch.Tensor x: Variable :math:`x` at which the gradient is computed.
+        :param bool get_energy: Optional flag. If set to True, the function additionally returns the objective value at :math:`x`. Dafault: False.
+        :return: (:class:`torch.Tensor`) gradient at :math:`x`.
+        """
+        return self.model.grad(x, *args, get_energy=get_energy, **kwargs)
+
+    def fn(self, x, *args, **kwargs):
+        r"""
+        Computes the regularizer :math:`\reg{x}=\sum_{c} \psi_c(W_c x)`
+
+        :param torch.Tensor x: Variable :math:`x` at which the prior is computed.
+        :return: (:class:`torch.Tensor`) prior :math:`\reg{x}`.
+        """
+        return self.model.fn(x, *args, **kwargs)
+
+
+class LeastSquaresResidual(Prior):
+    r"""
+    Least Squares Regularizer :math:`\reg{x}=\|x-D(x)\|^2` for some denoising network :math:`D`.
+
+    To allow the automatic tuning of the regularization parameter, we parameterize the regularizer with two additional scalings, i.e.,
+    we implement :math:`\alpha\reg{\beta x}` instead of :math:`\reg{x}` where :math:`\alpha` and :math:`\sigma` are learnable parameters of the regularizer.
+    These parameters are learned in the log scale to enforce positivity.
+
+    This type of network was used in several references, see e.g., :footcite:t:`hurault2021gradient` or :footcite:t:`zou2023deep`.
+
+    :param int in_channels: Number of input channels (`1` for gray valued images, `3` for color images). Default: `3`
+    :param str device: Device for the weights. Default: `"cpu"`
+    :param str, None pretrained: use pretrained weights. If ``pretrained=None``, the weights will be initialized at random
+        using Pytorch's default initialization. If ``pretrained='download'``, the weights will be downloaded from an
+        online repository (only available for the default architecture with 3 or 1 input/output channels).
+        Finally, ``pretrained`` can also be set as a path to the user's own pretrained weights.
+    :param torch.nn.Module denoiser: Denoising network :math:`D` which is used in the architecture. Use `None` for a DRUNet with `nb=2`, `nc=(32, 64, 128, 256)` and softmax activation. Default: `None`
+    :param float sigma: Noise level applied in the DRUNet. Default: `0.03`
+    """
+
+    def __init__(
+        self,
+        denoiser: torch.nn.Module = None,
+        input_scaling: float = 0.0,
+        output_scaling: float = 0.0,
+    ):
+        super(LeastSquaresResidual, self).__init__()
+
+        self.denoiser = denoiser
+
+    def grad(self, x, sigma_denoiser, *args, get_energy=False, **kwargs):
+        r"""
+        Calculates the gradient of the regularizer at :math:`x`.
+
+        :param torch.Tensor x: Variable :math:`x` at which the gradient is computed.
+        :param bool get_energy: Optional flag. If set to True, the function additionally returns the objective value at :math:`x`. Dafault: False.
+        :return: (:class:`torch.Tensor`) gradient at :math:`x`.
+        """
+        grad = torch.exp(self.output_scaling) * self.denoiser.potential_grad(
+            torch.exp(self.input_scaling) * x.contiguous(), sigma_denoiser
+        )
+        if get_energy:
+            reg = self(x, sigma_denoiser)
+            return reg, grad
+        return grad
+
+    def fn(self, x, sigma_denoiser, *args, **kwargs):
+        r"""
+        Computes the regularizer :math:`\reg{x}=\|x-D(x)\|^2`
+
+        :param torch.Tensor x: Variable :math:`x` at which the prior is computed.
+        :return: (:class:`torch.Tensor`) prior :math:`\reg{x}`.
+        """
+        return torch.exp(
+            self.output_scaling + self.input_scaling
+        ) * self.denoiser.potential(
+            torch.exp(self.input_scaling) * x.contiguous(), sigma_denoiser
+        )
