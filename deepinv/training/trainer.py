@@ -658,6 +658,12 @@ class Trainer:
                 self.model.parameters(), self.grad_clip
             )
 
+        for name, param in self.model.named_parameters():
+            if param.grad is not None and torch.isnan(param.grad).any():
+                print(f"NaN gradient in parameter: {name}")
+                print(param)
+                raise ValueError(f"NaN values found in grad of parameter '{name}'")
+
         if self.check_grad:
             if grad_norm is not None:
                 grad_norm = grad_norm.pow(2).sum().sqrt().item()

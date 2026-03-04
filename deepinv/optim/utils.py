@@ -48,7 +48,7 @@ def objective_function(x, data_fidelity, prior, cur_params, y, physics):
         return data_fidelity(x, y, physics)
 
 
-def gradient_descent(grad_f, x, step_size=1.0, max_iter=1e2, tol=1e-5):
+def gradient_descent(grad_f, x, step_size=1.0, max_iter=1e2, tol=1e-5, verbose=False):
     """
     Standard gradient descent algorithm`.
 
@@ -64,6 +64,10 @@ def gradient_descent(grad_f, x, step_size=1.0, max_iter=1e2, tol=1e-5):
         x_prev = x
         x = x - grad_f(x) * step_size
         if check_conv(x_prev, x, i, thres_conv=tol):
+            if verbose:
+                print(
+                    f"Gradient descent converged at iteration {i}, with convergence criteria = {tol:.2E} \r"
+                )
             break
     return x
 

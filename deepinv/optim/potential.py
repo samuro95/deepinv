@@ -50,10 +50,11 @@ class Potential(nn.Module):
         :return: (torch.Tensor) conjugate potential :math:`h^*(y)`.
         """
         grad = lambda z: self.grad(z, *args, **kwargs) - x
-        z = gradient_descent(-grad, x)
-        return self.forward(z, *args, **kwargs) - torch.sum(
+        z = gradient_descent(grad, x, verbose=True, step_size=0.1, max_iter=1000, tol=1e-9)
+        inner = torch.sum(
             x.reshape(x.shape[0], -1) * z.reshape(z.shape[0], -1), dim=-1
         ).view(x.shape[0], 1)
+        return inner - self.forward(z, *args, **kwargs)
 
     def grad(self, x, *args, **kwargs):
         r"""
@@ -70,27 +71,15 @@ class Potential(nn.Module):
                 h, x, torch.ones_like(h), create_graph=True, only_inputs=True
             )[0]
         return grad
-
+    
     def grad_conj(self, x, *args, **kwargs):
         r"""
-        Calculates the gradient of the convex conjugate potential :math:`h^*` at :math:`x`.
-        If the potential is convex and differentiable, the gradient of the conjugate is the inverse of the gradient of the potential.
-        By default, the gradient is computed using automatic differentiation.
-
-        :param torch.Tensor x: Variable :math:`x` at which the gradient is computed.
-        :return: (torch.Tensor) gradient :math:`\nabla_x h^*`, computed in :math:`x`.
+        Computes \nabla h^*(x). For exact convex conjugates, this is the argmax
+        z solving grad h(z) = x.
         """
-        with torch.enable_grad():
-            x = x.requires_grad_()
-            h = self.conjugate(x, *args, **kwargs)
-            grad = torch.autograd.grad(
-                h,
-                x,
-                torch.ones_like(h),
-                create_graph=True,
-                only_inputs=True,
-            )[0]
-        return grad
+        grad = lambda z: self.grad(z, *args, **kwargs) - x
+        z = gradient_descent(grad, x, verbose=False)
+        return z
 
     def prox(
         self,
