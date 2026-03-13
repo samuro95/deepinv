@@ -3,6 +3,7 @@ from __future__ import annotations
 import warnings
 from deepinv.utils import AverageMeter, get_timestamp, plot, plot_curves, get_device
 import os
+import random
 import numpy as np
 from tqdm import tqdm
 import torch
@@ -86,6 +87,8 @@ class Trainer:
         using :class:`deepinv.utils.AverageMeter` to deal with uneven batch sizes. Default is :class:`supervised loss <deepinv.loss.SupLoss>`.
     :param float grad_clip: Gradient clipping value for the optimizer. If None, no gradient clipping is performed. Default is None.
     :param bool optimizer_step_multi_dataset: If ``True``, the optimizer step is performed once on all datasets. If ``False``, the optimizer step is performed on each dataset separately.
+    :param int, None seed: Random seed used to initialize training randomness. If ``None`` (default), a fresh seed is drawn at
+        the start of each call to :meth:`train`, so noise and online measurements differ across runs.
 
     .. note::
 
@@ -276,6 +279,7 @@ class Trainer:
     physics_generator: PhysicsGenerator | list[PhysicsGenerator] = None
     loop_random_online_physics: bool = False
     optimizer_step_multi_dataset: bool = True
+    seed: int | None = None
     metrics: Metric | list[Metric] | None = field(default_factory=PSNR)
     compute_train_metrics: bool = True
     early_stop_on_losses: bool = False
@@ -340,6 +344,9 @@ class Trainer:
         """
         if not isinstance(self.train_dataloader, (list, tuple)):
             self.train_dataloader = [self.train_dataloader]
+
+        if train:
+            self.init_random_seed()
 
         if self.eval_dataloader is not None and not isinstance(
             self.eval_dataloader, (list, tuple)
@@ -566,6 +573,23 @@ class Trainer:
             )
         except (ValueError, TypeError, AttributeError):
             self._model_accepts_update_parameters = False
+
+    def init_random_seed(self):
+        r"""
+        Initialize random seeds for torch, numpy and python's random module.
+
+        If ``self.seed`` is ``None``, a fresh torch seed is drawn for this training run.
+        """
+        if self.seed is None:
+            self.seed = int(torch.seed())
+        else:
+            torch.manual_seed(self.seed)
+
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+
+        np.random.seed(self.seed % (2**32))
+        random.seed(self.seed)
 
     def load_model(
         self, ckpt_pretrained: str | Path = None, strict: bool = True

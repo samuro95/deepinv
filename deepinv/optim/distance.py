@@ -226,7 +226,8 @@ class PoissonLikelihoodDistance(Distance):
             y = y / self.gain
 
         if self.floor_input:
-            x = x.clamp_min(0.0)
+            x = x.clamp_min(self.epsilon)
+            y = x.clamp_min(self.epsilon)
 
         x_denormalized = x / self.gain
         # Clamp from below to avoid numerical instability when x approaches 0
