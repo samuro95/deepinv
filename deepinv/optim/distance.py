@@ -208,8 +208,8 @@ class PoissonLikelihoodDistance(Distance):
         bkg: float = 0.0,
         denormalize: bool = False,
         floor_input: bool = False,
-        epsilon: float = 1e-12,
-        include_y_log_y: bool = False,  # adds y log y - y term (constant wrt x)
+        epsilon: float = 1e-10,
+        include_y_log_y: bool = True,  # adds y log y - y term (constant wrt x)
     ):
         super().__init__()
         self.bkg = bkg
@@ -231,6 +231,7 @@ class PoissonLikelihoodDistance(Distance):
         x_denormalized = x / self.gain
         # Clamp from below to avoid numerical instability when x approaches 0
         x_denormalized = x_denormalized.clamp_min(self.epsilon)
+        y = y.clamp_min(self.epsilon)
     
         if self.include_y_log_y:
             lam = y / (x_denormalized + self.bkg)

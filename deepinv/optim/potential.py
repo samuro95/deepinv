@@ -53,8 +53,16 @@ class Potential(nn.Module):
         z = gradient_descent(grad, x, verbose=True, step_size=0.1, max_iter=1000, tol=1e-9)
         inner = torch.sum(
             x.reshape(x.shape[0], -1) * z.reshape(z.shape[0], -1), dim=-1
-        ).view(x.shape[0], 1)
-        return inner - self.forward(z, *args, **kwargs)
+        )
+        value = self.forward(z, *args, **kwargs)
+        if value.shape != inner.shape:
+            value = value.reshape(x.shape[0], -1)
+            if value.shape[1] != 1:
+                raise ValueError(
+                    "Potential.conjugate expects self.forward to return one scalar per batch element."
+                )
+            value = value[:, 0]
+        return inner - value
 
     def grad(self, x, *args, **kwargs):
         r"""

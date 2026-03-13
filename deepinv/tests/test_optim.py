@@ -13,11 +13,23 @@ from deepinv.optim.data_fidelity import (
 )
 from deepinv.optim.prior import Prior, PnP, RED
 from deepinv.optim.optim_iterators import GDIteration
+from deepinv.optim.potential import Potential
 from deepinv.tests.test_physics import find_operator
 from deepinv.optim.utils import least_squares_implicit_backward
 
 from functools import partial
 import copy
+
+
+def test_potential_conjugate_batch_shape():
+    potential = Potential(
+        lambda x: 0.5 * torch.sum(x.reshape(x.shape[0], -1) ** 2, dim=-1)
+    )
+    x = torch.randn(100, 1)
+
+    out = potential.conjugate(x)
+
+    assert out.shape == torch.Size([100])
 
 
 def test_data_fidelity_l2(device):
