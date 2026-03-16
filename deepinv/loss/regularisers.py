@@ -3,49 +3,6 @@ from deepinv.loss.loss import Loss
 
 
 class JacobianSpectralNorm(Loss):
-    r"""
-    Computes the spectral norm of the Jacobian.
-
-    Given a function :math:`f:\mathbb{R}^n\to\mathbb{R}^n`, this module computes the spectral
-    norm of the Jacobian of :math:`f` in :math:`x`, i.e.
-
-    .. math::
-
-        \|\frac{df}{du}(x)\|_2.
-
-    This spectral norm is computed with a power method leveraging jacobian vector products, as proposed by :footcite:t:`pesquet2021learning`.
-
-    .. note::
-
-        This implementation assumes that the input :math:`x` is batched with shape `(B, ...)`, where B is the batch size.
-
-    :param int max_iter: maximum numer of iteration of the power method.
-    :param float tol: tolerance for the convergence of the power method.
-    :param bool eval_mode: set to ``False`` if one does not want to backpropagate through the spectral norm (default), set to ``True`` otherwise.
-    :param bool verbose: whether to print computation details or not.
-    :param str reduction: reduction in batch dimension. One of ["mean", "sum", "max"], operation to be performed after all spectral norms have been computed. If ``None``, a vector of length ``batch_size`` will be returned. Defaults to "max".
-    :param int reduced_batchsize: if not `None`, the batch size will be reduced to this value for the computation of the spectral norm. Can be useful to reduce memory usage and computation time when the batch size is large.
-
-    |sep|
-
-    :Examples:
-
-    .. doctest::
-
-        >>> import torch
-        >>> from deepinv.loss.regularisers import JacobianSpectralNorm
-        >>> _ = torch.manual_seed(0)
-        >>>
-        >>> reg_l2 = JacobianSpectralNorm(max_iter=100, tol=1e-5, eval_mode=False, verbose=True)
-        >>> A = torch.diag(torch.Tensor(range(1, 51))).unsqueeze(0)  # creates a diagonal matrix with largest eigenvalue = 50
-        >>> x = torch.randn((1, A.shape[1])).unsqueeze(0).requires_grad_()
-        >>> out = x @ A
-        >>> regval = reg_l2(out, x)
-        >>> print(regval) # returns approx 50
-        tensor(49.9999)
-
-    """
-
     def __init__(
         self,
         max_iter: int = 10,
@@ -54,14 +11,16 @@ class JacobianSpectralNorm(Loss):
         verbose: bool = False,
         reduction: str = "max",
         reduced_batchsize: int = None,
+        eps: float = 1e-10,
     ):
-        super(JacobianSpectralNorm, self).__init__()
+        super().__init__()
         self.name = "jsn"
         self.max_iter = max_iter
         self.tol = tol
         self.eval = eval_mode
         self.verbose = verbose
         self.reduced_batchsize = reduced_batchsize
+        self.eps = eps
 
         self.reduction = lambda x: x
         if reduction is not None:
@@ -80,86 +39,86 @@ class JacobianSpectralNorm(Loss):
                     'Reduction should be "mean", "sum", "max", "none" or None.'
                 )
 
+    def _safe_norm(self, t):
+        return torch.linalg.vector_norm(
+            t, dim=tuple(range(1, t.dim())), keepdim=True
+        ).clamp_min(self.eps)
+
     def _reduce_batch(self, x, y):
-        """
-        Reduces the batch dimension of the input tensors x and y.
-        """
         if self.reduced_batchsize is not None:
             x = x[: self.reduced_batchsize]
             y = y[: self.reduced_batchsize]
         return x, y
 
     def forward(self, y, x, **kwargs):
-        """
-        Computes the spectral norm of the Jacobian of :math:`f` in :math:`x`.
-
-        .. warning::
-
-            The input :math:`x` must have requires_grad=True before evaluating :math:`f`.
-
-        :param torch.Tensor y: output of the function :math:`f` at :math:`x`, of dimension `(B, ...)`
-        :param torch.Tensor x: input of the function :math:`f`, of dimension `(B, ...)`
-
-        If x has multiple dimensions, it's assumed the first one corresponds to the batch dimension.
-        """
-
         x, y = self._reduce_batch(x, y)
 
-        assert x.shape[0] == y.shape[0], ValueError(
-            f"x and y should have the same number of instances. Got {x.shape[0]} vs. {y.shape[0]}"
+        assert x.shape[0] == y.shape[0], (
+            f"x and y should have the same number of instances. "
+            f"Got {x.shape[0]} vs. {y.shape[0]}"
         )
 
-        u = torch.randn_like(x)
-        # Normalize each batch element
-        u = u / torch.linalg.vector_norm(u, dim=tuple(range(1, u.dim())), keepdim=True)
+        if not torch.isfinite(x).all():
+            raise RuntimeError("JacobianSpectralNorm: x contains NaN/Inf.")
+        if not torch.isfinite(y).all():
+            raise RuntimeError("JacobianSpectralNorm: y contains NaN/Inf.")
 
-        zold = torch.zeros_like(u)
+        u = torch.randn_like(x)
+        u = u / self._safe_norm(u)
+
+        zold = None
 
         for it in range(self.max_iter):
-            # Double backward trick. From https://gist.github.com/apaszke/c7257ac04cb8debb82221764f6d117ad
             w = torch.ones_like(y, requires_grad=True)
+
+            jvp = torch.autograd.grad(
+                y, x, w, create_graph=True, retain_graph=True
+            )[0]
+
             v = torch.autograd.grad(
-                torch.autograd.grad(y, x, w, create_graph=True),
-                w,
-                u,
-                create_graph=not self.eval,
-            )[
-                0
-            ]  # v = A(u)
+                jvp, w, u, create_graph=not self.eval, retain_graph=True
+            )[0]  # J u
 
-            (v,) = torch.autograd.grad(y, x, v, retain_graph=True, create_graph=True)
+            (jtj_u,) = torch.autograd.grad(
+                y, x, v, retain_graph=True, create_graph=True
+            )  # J^T J u
 
-            # multiply corresponding batch elements
-            z = (
-                torch.linalg.vecdot(u.flatten(1, -1), v.flatten(1, -1), dim=-1)
-                / torch.linalg.vector_norm(u, dim=tuple(range(1, u.dim()))) ** 2
-            )
+            if not torch.isfinite(jtj_u).all():
+                if self.verbose:
+                    print(f"NaN/Inf in power iteration at iter {it}")
+                return torch.full((), float("inf"), device=x.device, dtype=x.dtype)
 
-            if it > 0:
+            u_flat = u.flatten(1)
+            v_flat = jtj_u.flatten(1)
+
+            denom = (u_flat.pow(2).sum(dim=-1)).clamp_min(self.eps)
+            z = (u_flat * v_flat).sum(dim=-1) / denom
+
+            # Prevent tiny negative values from roundoff
+            z = z.clamp_min(0.0)
+
+            if zold is not None:
                 rel_var = torch.linalg.vector_norm(z - zold)
-                if rel_var < self.tol and self.verbose:
-                    print(
-                        "Power iteration converged at iteration: ",
-                        it,
-                        ", val: ",
-                        z.sqrt().tolist(),
-                        ", relvar :",
-                        rel_var.item(),
-                    )
+                if rel_var < self.tol:
+                    if self.verbose:
+                        print(
+                            f"Power iteration converged at iter {it}, "
+                            f"val={z.sqrt().tolist()}, relvar={rel_var.item()}"
+                        )
                     break
+
             zold = z.detach().clone()
 
-            u = v / torch.linalg.vector_norm(
-                v, dim=tuple(range(1, v.dim())), keepdim=True
-            )
+            u = jtj_u / self._safe_norm(jtj_u)
 
             if self.eval:
-                w.detach_()
-                v.detach_()
-                u.detach_()
+                w = w.detach()
+                v = v.detach()
+                u = u.detach()
 
-        return self.reduction(z.view(-1).sqrt())
-
+        out = torch.sqrt(z.clamp_min(self.eps))
+        out = torch.nan_to_num(out, nan=float("inf"), posinf=float("inf"), neginf=0.0)
+        return self.reduction(out.view(-1))
 
 class FNEJacobianSpectralNorm(Loss):
     r"""

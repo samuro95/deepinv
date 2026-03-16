@@ -1049,6 +1049,7 @@ class Trainer:
         train=True,
         last_batch=False,
         update_progress_bar=False,
+        init=False
     ):
         r"""
         Train/Eval a batch.
@@ -1133,6 +1134,7 @@ class Trainer:
                 y,
                 x_net.detach() if x_net is not None else None,
                 train=train,
+                init = init
             )
 
     def plot(self, epoch, physics, x, y, x_net, train=True):
@@ -1547,6 +1549,7 @@ class Trainer:
         compare_no_learning: bool = True,
         log_raw_metrics: bool = False,
         metrics: Metric | list[Metric] | None = None,
+        init: bool = False
     ) -> dict:
         r"""
         Test the model, compute metrics and plot images.
@@ -1612,6 +1615,7 @@ class Trainer:
                 train=False,
                 last_batch=(i == batches - 1),
                 update_progress_bar=(i % self.freq_update_progress_bar == 0),
+                init=init
             )
 
         (

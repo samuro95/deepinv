@@ -208,7 +208,7 @@ class PoissonLikelihoodDistance(Distance):
         bkg: float = 0.0,
         denormalize: bool = False,
         floor_input: bool = False,
-        epsilon: float = 1e-10,
+        epsilon: float = 1e-5,
         include_y_log_y: bool = True,  # adds y log y - y term (constant wrt x)
     ):
         super().__init__()
@@ -232,14 +232,15 @@ class PoissonLikelihoodDistance(Distance):
         x_denormalized = x / self.gain
         # Clamp from below to avoid numerical instability when x approaches 0
         x_denormalized = x_denormalized.clamp_min(self.epsilon)
-        y = y.clamp_min(self.epsilon)
     
+        x = x / self.gain
+        
         if self.include_y_log_y:
-            lam = y / (x_denormalized + self.bkg)
-            loss_px = x_denormalized - y + torch.special.xlogy(y, lam)
+            lam = y / (x + self.bkg)
+            loss_px = x - y * torch.log(x + self.bkg) - y + torch.log(y)
         else:
-            lam = x_denormalized + self.bkg
-            loss_px = x_denormalized - torch.special.xlogy(y, lam)
+            lam = x + self.bkg
+            loss_px = x - y * torch.log(lam)
 
         return loss_px.reshape(x.shape[0], -1).sum(dim=1)
 
@@ -250,7 +251,7 @@ class PoissonLikelihoodDistance(Distance):
             y = y / self.gain
 
         if self.floor_input:
-            x = x.clamp_min(0.0)
+            x = x.clamp_min(self.epsilon)
 
         lam = (x / self.gain) + self.bkg
 
