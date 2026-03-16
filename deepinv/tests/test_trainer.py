@@ -1128,6 +1128,58 @@ def test_trainer_speed(device):  # pragma: no cover
     assert time_trainer / time_naive < 1.1
 
 
+def test_trainer_random_seed_initialization(model, physics, device):
+    trainer = Trainer(
+        model=model,
+        train_dataloader=[],
+        optimizer=None,
+        losses=[],
+        physics=physics,
+        save_path=None,
+        device=device,
+    )
+
+    with (
+        patch.object(dinv.training.trainer.torch, "seed", return_value=1234) as torch_seed,
+        patch.object(dinv.training.trainer.torch, "manual_seed") as manual_seed,
+        patch.object(dinv.training.trainer.np.random, "seed") as np_seed,
+        patch.object(dinv.training.trainer.random, "seed") as py_seed,
+    ):
+        trainer.setup_train()
+
+    torch_seed.assert_called_once_with()
+    manual_seed.assert_not_called()
+    np_seed.assert_called_once_with(1234)
+    py_seed.assert_called_once_with(1234)
+    assert trainer.seed == 1234
+
+
+def test_trainer_fixed_seed_initialization(model, physics, device):
+    trainer = Trainer(
+        model=model,
+        train_dataloader=[],
+        optimizer=None,
+        losses=[],
+        physics=physics,
+        save_path=None,
+        device=device,
+        seed=7,
+    )
+
+    with (
+        patch.object(dinv.training.trainer.torch, "seed") as torch_seed,
+        patch.object(dinv.training.trainer.torch, "manual_seed") as manual_seed,
+        patch.object(dinv.training.trainer.np.random, "seed") as np_seed,
+        patch.object(dinv.training.trainer.random, "seed") as py_seed,
+    ):
+        trainer.setup_train()
+
+    torch_seed.assert_not_called()
+    manual_seed.assert_called_once_with(7)
+    np_seed.assert_called_once_with(7)
+    py_seed.assert_called_once_with(7)
+
+
 @pytest.mark.parametrize("model_performance", [40.0])
 @pytest.mark.parametrize("learning_free_performance", [20.0])
 def test_trained_model_not_used_for_no_learning_metrics(

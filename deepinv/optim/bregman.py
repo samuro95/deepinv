@@ -161,16 +161,20 @@ class ConjBurgEntropy(Bregman):
         super().__init__()
 
     def fn(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.clamp(x, max=-1e-6)
         n = x.reshape(x.shape[0], -1).shape[-1]
         return -torch.sum(torch.log(-x).reshape(x.shape[0], -1), dim=-1) - n
 
     def conjugate(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.clamp(x, min=1e-6)
         return -torch.sum(torch.log(x).reshape(x.shape[0], -1), dim=-1)
 
     def grad(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        x = torch.clamp(x, max=-1e-6)
         return - 1 / x
 
     def grad_conj(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        x = torch.clamp(x, min=1e-6)
         return - 1 / x
 
 
