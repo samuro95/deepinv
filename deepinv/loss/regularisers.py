@@ -57,12 +57,6 @@ class JacobianSpectralNorm(Loss):
             f"x and y should have the same number of instances. "
             f"Got {x.shape[0]} vs. {y.shape[0]}"
         )
-
-        if not torch.isfinite(x).all():
-            raise RuntimeError("JacobianSpectralNorm: x contains NaN/Inf.")
-        if not torch.isfinite(y).all():
-            raise RuntimeError("JacobianSpectralNorm: y contains NaN/Inf.")
-
         u = torch.randn_like(x)
         u = u / self._safe_norm(u)
 
@@ -82,11 +76,6 @@ class JacobianSpectralNorm(Loss):
             (jtj_u,) = torch.autograd.grad(
                 y, x, v, retain_graph=True, create_graph=True
             )  # J^T J u
-
-            if not torch.isfinite(jtj_u).all():
-                if self.verbose:
-                    print(f"NaN/Inf in power iteration at iter {it}")
-                return torch.full((), float("inf"), device=x.device, dtype=x.dtype)
 
             u_flat = u.flatten(1)
             v_flat = jtj_u.flatten(1)
