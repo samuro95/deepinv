@@ -123,6 +123,7 @@ class BurgEntropy(Bregman):
         :param torch.Tensor x: Variable :math:`x` at which the potential is computed.
         :return: (torch.Tensor) potential :math:`h(x)`.
         """
+        x = torch.clamp(x, min=1e-6)
         return -torch.sum(torch.log(x).reshape(x.shape[0], -1), dim=-1)
 
     def conjugate(self, x: torch.Tensor) -> torch.Tensor:
@@ -133,6 +134,7 @@ class BurgEntropy(Bregman):
         :param torch.Tensor x: Variable :math:`x` at which the conjugate is computed.
         :return: (torch.Tensor) conjugate potential :math:`\phi^*(y)`.
         """
+        x = torch.clamp(x, max=-1e-6)
         n = x.reshape(x.shape[0], -1).shape[-1]
         return -torch.sum(torch.log(-x).reshape(x.shape[0], -1), dim=-1) - n
 
@@ -143,6 +145,7 @@ class BurgEntropy(Bregman):
         :param torch.Tensor x: Variable :math:`x` at which the gradient is computed.
         :return: (torch.Tensor) gradient :math:`\nabla_x \phi`, computed in :math:`x`.
         """
+        x = torch.clamp(x, min=1e-6)
         return -1 / x
 
     def grad_conj(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
@@ -152,6 +155,7 @@ class BurgEntropy(Bregman):
         :param torch.Tensor x: Variable :math:`x` at which the gradient is computed.
         :return: (torch.Tensor) gradient :math:`\nabla_x h^*`, computed in :math:`x`.
         """
+        x = torch.clamp(x, max=-1e-6)
         return -1 / x
     
 
