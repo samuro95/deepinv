@@ -292,7 +292,12 @@ class ScoreModelWrapper(Denoiser):
         # UNet forward
         if self.takes_integer_time:
             t = (t * (self.n_timesteps - 1)).long()
-        pred = self.model(x, t, *args, **kwargs)
+    
+        # pred = self.model(x, t, *args, **kwargs)
+        pred = self.model(x, t)
+        if isinstance(pred, dict) and "sample" in pred:
+            pred = pred["sample"]
+        
         if isinstance(pred, (list, tuple)):
             pred = pred[0]  # take the first output if multiple outputs are returned
         pred = pred.to(dtype)
