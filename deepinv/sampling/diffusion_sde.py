@@ -199,7 +199,7 @@ class DiffusionSDE(BaseSDE):
 
             def alpha(t: Tensor | float) -> float:
                 return alpha_value
-            
+
         self.alpha = alpha
 
         def backward_drift(x, t, *args, **kwargs):
@@ -342,6 +342,7 @@ class EDMDiffusionSDE(DiffusionSDE):
 
         if scale_t is None:
             if variance_preserving:
+
                 def scale_t(t):
                     t = self._handle_time_step(t)
                     return (1 / (1 + self.sigma_t(t) ** 2)) ** 0.5
@@ -768,7 +769,6 @@ class VariancePreservingDiffusion(SongDiffusionSDE):
                 beta_min_sqrt = np.sqrt(beta_min)
                 beta_max_sqrt = np.sqrt(beta_max)
                 return (beta_min_sqrt + t * (beta_max_sqrt - beta_min_sqrt)) ** 2
-            
 
         def B_t(t: Tensor | float) -> Tensor:
             t = self._handle_time_step(t)
@@ -780,7 +780,7 @@ class VariancePreservingDiffusion(SongDiffusionSDE):
                 a = beta_min_sqrt
                 c = beta_max_sqrt - beta_min_sqrt
                 return (a**2) * t + a * c * t**2 + (c**2 / 3.0) * t**3
-            
+
         super().__init__(
             beta_t=beta_t,
             B_t=B_t,
