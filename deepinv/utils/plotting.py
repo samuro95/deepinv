@@ -709,7 +709,7 @@ def plot_curves(metrics, save_dir=None, show=True, return_fig=False, return_axs=
                 log_scale = False
             elif metric_name == "cost":
                 label = r"$F(x_k)$" if plt.rcParams["text.usetex"] else "F"
-                log_scale = False
+                log_scale = True
             else:
                 label = metric_name
                 log_scale = False
@@ -723,7 +723,7 @@ def plot_curves(metrics, save_dir=None, show=True, return_fig=False, return_axs=
             axs[i].xaxis.set_major_locator(MaxNLocator(integer=True))
             # axs[i].set_xlabel("iterations")
             axs[i].set_title(label)
-            axs[i].legend()
+            # axs[i].legend()
     plt.subplots_adjust(hspace=0.1)
     if save_dir:
         plt.savefig(save_dir / "curves.png")
