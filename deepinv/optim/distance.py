@@ -207,7 +207,7 @@ class PoissonLikelihoodDistance(Distance):
         gain: float = 1.0,
         bkg: float = 0.0,
         denormalize: bool = False,
-        floor_input: bool = False,
+        floor_input: bool = True,
         epsilon: float = 1e-5,
         include_y_log_y: bool = True,  # adds y log y - y term (constant wrt x)
     ):
@@ -227,7 +227,7 @@ class PoissonLikelihoodDistance(Distance):
 
         if self.floor_input:
             x = x.clamp_min(self.epsilon)
-            y = x.clamp_min(self.epsilon)
+            y = y.clamp_min(self.epsilon)
 
         x_denormalized = x / self.gain
         # Clamp from below to avoid numerical instability when x approaches 0
