@@ -1214,7 +1214,6 @@ class Trainer:
                 show=self.show_plot,
             )
             if self.wandb_vis:
-                print('here2')
                 import wandb
                 log_dict_post_epoch = {}
                 images = wandb.Image(fig)
@@ -1580,7 +1579,7 @@ class Trainer:
             self.mlflow_setup,
             self.log_train_batch,
         )
-        # self.wandb_vis = False
+        self.wandb_vis = False
         self.wandb_setup = {}
         self.mlflow_vis = False
         self.mlflow_setup = {}
