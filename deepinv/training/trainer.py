@@ -517,7 +517,7 @@ class Trainer:
         ):
             self.physics_generator = [self.physics_generator]
 
-        self.save_folder_im = None
+        # self.save_folder_im = None
 
         if self.early_stop is not None and self.eval_dataloader is None:
             warnings.warn(
@@ -1155,8 +1155,8 @@ class Trainer:
         """
         post_str = "Training" if train else "Eval"
 
-        plot_images = self.plot_images and ((epoch + 1) % self.plot_interval == 0)
-        save_images = self.save_folder_im is not None
+        plot_images = self.plot_images and (epoch % self.plot_interval == 0)
+        save_images = self.save_folder_im is not None 
 
         if plot_images or save_images:
             if self.compare_no_learning:
@@ -1214,6 +1214,7 @@ class Trainer:
                 show=self.show_plot,
             )
             if self.wandb_vis:
+                print('here2')
                 import wandb
                 log_dict_post_epoch = {}
                 images = wandb.Image(fig)
@@ -1579,7 +1580,7 @@ class Trainer:
             self.mlflow_setup,
             self.log_train_batch,
         )
-        self.wandb_vis = False
+        # self.wandb_vis = False
         self.wandb_setup = {}
         self.mlflow_vis = False
         self.mlflow_setup = {}
