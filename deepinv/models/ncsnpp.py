@@ -588,6 +588,8 @@ class ADM(Denoiser):
 
     def forward_unet(self, x, noise_labels, class_labels, augment_labels=None):
         # Mapping.
+        #print(class_labels)
+
         emb = self.map_noise(noise_labels)
         if self.map_augment is not None and augment_labels is not None:
             emb = emb + self.map_augment(augment_labels)
