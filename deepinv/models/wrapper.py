@@ -300,6 +300,7 @@ class ScoreModelWrapper(Denoiser):
         
         if isinstance(pred, (list, tuple)):
             pred = pred[0]  # take the first output if multiple outputs are returned
+        
         pred = pred.to(dtype)
 
         # Convert model output to x0 depending on prediction type
