@@ -1,4 +1,9 @@
 from __future__ import annotations
+import hashlib
+import pickle
+from pathlib import Path
+import sys
+import types
 import torch
 from torch.nn.functional import silu
 import numpy as np
@@ -13,7 +18,254 @@ from deepinv.models.utils import (
 from deepinv.models.base import Denoiser
 from torch.nn import Linear, GroupNorm
 from torch import Tensor
+from collections.abc import Mapping
 from typing import Sequence
+
+
+_NCSNPP_CHECKPOINT_KEYS = (
+    "ema",
+    "model_ema",
+    "state_dict",
+    "model_state_dict",
+    "model",
+    "network",
+    "net",
+    "module",
+    "denoiser",
+)
+
+_NVIDIA_PERSISTENT_MODULE_CACHE = {}
+
+
+class _CompatEasyDict(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+    def __delattr__(self, name):
+        try:
+            del self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+def _compat_persistent_class(cls):
+    return cls
+
+
+def _compat_constant(value, shape=None, dtype=None, device=None, memory_format=None):
+    tensor = torch.as_tensor(value, dtype=dtype, device=device)
+    if shape is not None:
+        tensor = torch.broadcast_to(tensor, tuple(shape)).clone()
+    if memory_format is not None:
+        tensor = tensor.contiguous(memory_format=memory_format)
+    return tensor
+
+
+def _src_to_compat_module(module_src, module_name=None):
+    cache_key = (module_name, module_src)
+    if cache_key in _NVIDIA_PERSISTENT_MODULE_CACHE:
+        return _NVIDIA_PERSISTENT_MODULE_CACHE[cache_key]
+
+    hashed_name = hashlib.sha1(module_src.encode("utf-8")).hexdigest()
+    module_name = module_name or f"_nvidia_pickle_{hashed_name}"
+    module = types.ModuleType(module_name)
+    module.__file__ = f"<{module_name}>"
+    module.__package__ = module_name.rpartition(".")[0]
+    sys.modules[module_name] = module
+    exec(module_src, module.__dict__)
+    _NVIDIA_PERSISTENT_MODULE_CACHE[cache_key] = module
+    return module
+
+
+def _compat_reconstruct_persistent_obj(meta):
+    if isinstance(meta, Mapping):
+        meta = dict(meta)
+    else:
+        meta = dict(getattr(meta, "__dict__", {}))
+
+    module_src = meta["module_src"]
+    class_name = meta["class_name"]
+    module_name = meta.get("module_name") or meta.get("module")
+    module = _src_to_compat_module(module_src, module_name=module_name)
+    cls = getattr(module, class_name)
+    obj = cls.__new__(cls)
+
+    state = meta.get("state")
+    setstate = getattr(obj, "__setstate__", None)
+    if callable(setstate):
+        setstate(state)
+    elif isinstance(state, Mapping):
+        obj.__dict__.update(state)
+    elif state is None:
+        pass
+    else:
+        raise TypeError(
+            f"Unsupported persistent object state format: {type(state).__name__}."
+        )
+    return obj
+
+
+def _ensure_nvidia_pickle_compat():
+    torch_utils_module = sys.modules.get("torch_utils")
+    if torch_utils_module is None:
+        torch_utils_module = types.ModuleType("torch_utils")
+        torch_utils_module.__path__ = []
+        sys.modules["torch_utils"] = torch_utils_module
+
+    if "torch_utils.persistence" not in sys.modules:
+        persistence_module = types.ModuleType("torch_utils.persistence")
+        persistence_module.persistent_class = _compat_persistent_class
+        persistence_module._reconstruct_persistent_obj = (
+            _compat_reconstruct_persistent_obj
+        )
+        torch_utils_module.persistence = persistence_module
+        sys.modules["torch_utils.persistence"] = persistence_module
+    elif not hasattr(torch_utils_module, "persistence"):
+        torch_utils_module.persistence = sys.modules["torch_utils.persistence"]
+
+    if "torch_utils.misc" not in sys.modules:
+        misc_module = types.ModuleType("torch_utils.misc")
+        misc_module.constant = _compat_constant
+        torch_utils_module.misc = misc_module
+        sys.modules["torch_utils.misc"] = misc_module
+    elif not hasattr(torch_utils_module, "misc"):
+        torch_utils_module.misc = sys.modules["torch_utils.misc"]
+
+    if "dnnlib" not in sys.modules:
+        dnnlib_module = types.ModuleType("dnnlib")
+        dnnlib_module.EasyDict = _CompatEasyDict
+        dnnlib_module.__path__ = []
+        util_module = types.ModuleType("dnnlib.util")
+        util_module.EasyDict = _CompatEasyDict
+        dnnlib_module.util = util_module
+        sys.modules["dnnlib"] = dnnlib_module
+        sys.modules["dnnlib.util"] = util_module
+
+
+def _is_missing_nvidia_pickle_dependency(exc: ModuleNotFoundError) -> bool:
+    return exc.name in {"torch_utils", "torch_utils.persistence", "dnnlib", "dnnlib.util"}
+
+
+def _torch_load_checkpoint(path, map_location=None):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _looks_like_state_dict(obj) -> bool:
+    return (
+        isinstance(obj, Mapping)
+        and len(obj) > 0
+        and all(isinstance(k, str) for k in obj.keys())
+        and all(
+            torch.is_tensor(v) or isinstance(v, torch.nn.Parameter)
+            for v in obj.values()
+        )
+    )
+
+
+def _strip_state_dict_prefixes(state_dict):
+    prefixes = ("module.", "_orig_mod.", "model.")
+    normalized = state_dict
+    keys = list(normalized.keys())
+    for prefix in prefixes:
+        if keys and all(key.startswith(prefix) for key in keys):
+            normalized = type(normalized)(
+                (key[len(prefix) :], value) for key, value in normalized.items()
+            )
+            keys = list(normalized.keys())
+    return normalized
+
+
+def _extract_ncsnpp_state_dict(checkpoint):
+    if _looks_like_state_dict(checkpoint):
+        return _strip_state_dict_prefixes(checkpoint)
+
+    if isinstance(checkpoint, torch.nn.Module):
+        return _strip_state_dict_prefixes(checkpoint.state_dict())
+
+    if isinstance(checkpoint, Mapping):
+        for key in _NCSNPP_CHECKPOINT_KEYS:
+            if key in checkpoint:
+                try:
+                    return _extract_ncsnpp_state_dict(checkpoint[key])
+                except TypeError:
+                    continue
+
+    if hasattr(checkpoint, "state_dict") and callable(checkpoint.state_dict):
+        return _strip_state_dict_prefixes(checkpoint.state_dict())
+
+    raise TypeError(
+        "Unsupported NCSN++ checkpoint format. Expected a state_dict, a module, "
+        f"or a checkpoint with one of the keys {_NCSNPP_CHECKPOINT_KEYS}."
+    )
+
+
+def _load_ncsnpp_checkpoint_state_dict(path, map_location=None):
+    path = Path(path).expanduser()
+    if path.suffix.lower() == ".pkl":
+        checkpoint = None
+        try:
+            checkpoint = _torch_load_checkpoint(path, map_location=map_location)
+        except ModuleNotFoundError as exc:
+            if _is_missing_nvidia_pickle_dependency(exc):
+                _ensure_nvidia_pickle_compat()
+                try:
+                    checkpoint = _torch_load_checkpoint(path, map_location=map_location)
+                except Exception:
+                    checkpoint = None
+            else:
+                raise
+        except Exception:
+            checkpoint = None
+
+        if checkpoint is None:
+            try:
+                with path.open("rb") as file:
+                    checkpoint = pickle.load(file)
+            except ModuleNotFoundError as exc:
+                if not _is_missing_nvidia_pickle_dependency(exc):
+                    raise
+                _ensure_nvidia_pickle_compat()
+                with path.open("rb") as file:
+                    checkpoint = pickle.load(file)
+    else:
+        checkpoint = _torch_load_checkpoint(path, map_location=map_location)
+    return _extract_ncsnpp_state_dict(checkpoint)
+
+
+def convert_ncsnpp_checkpoint_to_pt(
+    checkpoint_path: str | Path,
+    output_path: str | Path,
+    map_location="cpu",
+) -> str:
+    r"""Convert a local NCSN++ checkpoint to a plain ``.pt`` state dict file.
+
+    The input checkpoint can be a ``.pkl``, ``.pt``, or ``.pth`` file storing either
+    a raw state dict, a serialized module, or a dictionary containing common keys such
+    as ``"ema"`` or ``"state_dict"``.
+
+    :param str, pathlib.Path checkpoint_path: input checkpoint path.
+    :param str, pathlib.Path output_path: output path where the extracted state dict will be saved.
+    :param map_location: device mapping passed to :func:`torch.load`.
+    :return str: saved ``.pt`` path.
+    """
+
+    checkpoint_path = Path(checkpoint_path).expanduser()
+    output_path = Path(output_path).expanduser()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    state_dict = _load_ncsnpp_checkpoint_state_dict(
+        checkpoint_path, map_location=map_location
+    )
+    torch.save(state_dict, output_path)
+    return str(output_path)
 
 
 class NCSNpp(Denoiser):
@@ -244,8 +496,11 @@ class NCSNpp(Denoiser):
                 )
 
         if pretrained is not None:
-            if pretrained.lower() == "edm-ffhq64-uncond-ve" or (
-                pretrained.lower() == "download" and model_type == "ncsn"
+            pretrained_name = str(pretrained)
+            pretrained_lower = pretrained_name.lower()
+            pretrained_path = Path(pretrained_name).expanduser()
+            if pretrained_lower == "edm-ffhq64-uncond-ve" or (
+                pretrained_lower == "download" and model_type == "ncsn"
             ):
                 name = "edm-ffhq-64x64-uncond-ve.pt"
                 url = get_weights_url(model_name="edm", file_name=name)
@@ -253,8 +508,10 @@ class NCSNpp(Denoiser):
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
                 self.precondition_type = "edm"
-            elif pretrained.lower() == "edm-ffhq64-uncond-vp" or (
-                pretrained.lower() == "download" and model_type == "ddpm"
+                self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
+                self.pixel_std = 0.5
+            elif pretrained_lower == "edm-ffhq64-uncond-vp" or (
+                pretrained_lower == "download" and model_type == "ddpm"
             ):
                 name = "edm-ffhq-64x64-uncond-vp.pt"
                 url = get_weights_url(model_name="edm", file_name=name)
@@ -262,18 +519,31 @@ class NCSNpp(Denoiser):
                     url, map_location=lambda storage, loc: storage, file_name=name
                 )
                 self.precondition_type = "edm"
-            elif ".pt" in pretrained.lower():
-                url = get_weights_url(model_name="edm", file_name=pretrained)
-                ckpt = torch.hub.load_state_dict_from_url(
-                    url, map_location=lambda storage, loc: storage, file_name=pretrained
+                self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
+                self.pixel_std = 0.5
+            elif pretrained_path.exists():
+                ckpt = _load_ncsnpp_checkpoint_state_dict(
+                    pretrained_path, map_location=lambda storage, loc: storage
                 )
-                if "ve" in pretrained.lower() and "baseline" in pretrained.lower():
+                self._was_trained_on_minus_one_one = trained_on_minus_one_one
+            elif pretrained_lower.endswith((".pt", ".pth")):
+                url = get_weights_url(model_name="edm", file_name=pretrained_name)
+                ckpt = torch.hub.load_state_dict_from_url(
+                    url,
+                    map_location=lambda storage, loc: storage,
+                    file_name=pretrained_name,
+                )
+                if "ve" in pretrained_lower and "baseline" in pretrained_lower:
                     self.precondition_type = "ve-baseline"
-                elif "vp" in pretrained.lower() and "baseline" in pretrained.lower():
+                elif "vp" in pretrained_lower and "baseline" in pretrained_lower:
                     self.precondition_type = "vp-baseline"
+                self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
+                self.pixel_std = 0.5
+            else:
+                raise FileNotFoundError(
+                    f"Could not find pretrained checkpoint at {pretrained_path}."
+                )
             self.load_state_dict(ckpt, strict=True)
-            self._was_trained_on_minus_one_one = True  # Pretrained on [-1,1]s
-            self.pixel_std = 0.5
         else:
             self._was_trained_on_minus_one_one = trained_on_minus_one_one
         self.input_in_minus_one_one = input_in_minus_one_one
@@ -281,6 +551,18 @@ class NCSNpp(Denoiser):
         if device is not None:
             self.to(device)
             self.device = device
+
+    @staticmethod
+    def convert_checkpoint_to_pt(
+        checkpoint_path: str | Path,
+        output_path: str | Path,
+        map_location="cpu",
+    ) -> str:
+        r"""Convert a local checkpoint to a reusable ``.pt`` state dict."""
+
+        return convert_ncsnpp_checkpoint_to_pt(
+            checkpoint_path, output_path, map_location=map_location
+        )
 
     def forward_unet(self, x, sigma, class_labels=None, augment_labels=None):
         r"""

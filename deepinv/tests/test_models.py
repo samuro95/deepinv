@@ -1,5 +1,8 @@
 import pytest
 import json
+import pickle
+import sys
+import types
 from unittest.mock import patch, MagicMock
 import contextlib
 
@@ -7,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 import deepinv as dinv
+from deepinv.models.ncsnpp import _strip_state_dict_prefixes
 from deepinv.loss.metric.distortion import PSNR
 from deepinv.datasets.base import ImageDataset
 
@@ -1152,6 +1156,131 @@ def test_ncsnpp_net(device, image_size, n_channels, batch_size, precond, use_fp1
     y = model(x, torch.tensor([0.01]))
     # Check the output tensor shape
     assert y.shape == x.shape
+
+
+def test_ncsnpp_local_checkpoint_conversion(tmp_path):
+    model_kwargs = dict(
+        img_resolution=8,
+        in_channels=1,
+        out_channels=1,
+        model_channels=32,
+        channel_mult=(1, 1),
+        num_blocks=1,
+        attn_resolutions=(4,),
+        augment_dim=0,
+        pretrained=None,
+    )
+    model = dinv.models.NCSNpp(**model_kwargs)
+
+    pkl_path = tmp_path / "ncsnpp.pkl"
+    pt_path = tmp_path / "ncsnpp.pt"
+
+    with pkl_path.open("wb") as file:
+        pickle.dump({"ema": model}, file)
+
+    loaded_from_pkl = dinv.models.NCSNpp(
+        **{**model_kwargs, "pretrained": str(pkl_path)}
+    )
+
+    saved_path = dinv.models.NCSNpp.convert_checkpoint_to_pt(pkl_path, pt_path)
+    assert saved_path == str(pt_path)
+
+    converted_state_dict = torch.load(pt_path, map_location="cpu")
+    loaded_from_pt = dinv.models.NCSNpp(
+        **{**model_kwargs, "pretrained": str(pt_path)}
+    )
+
+    original_state_dict = model.state_dict()
+    pkl_state_dict = loaded_from_pkl.state_dict()
+    pt_state_dict = loaded_from_pt.state_dict()
+    for key, value in original_state_dict.items():
+        assert torch.equal(converted_state_dict[key], value)
+        assert torch.equal(pkl_state_dict[key], value)
+        assert torch.equal(pt_state_dict[key], value)
+
+
+def test_ncsnpp_conversion_handles_nvidia_persistent_pickle(tmp_path):
+    torch_utils_module = types.ModuleType("torch_utils")
+    torch_utils_module.__path__ = []
+    persistence_module = types.ModuleType("torch_utils.persistence")
+    persistence_module.__dict__["__name__"] = "torch_utils.persistence"
+    exec(
+        """
+def persistent_class(cls):
+    return cls
+
+def _reconstruct_persistent_obj(meta):
+    raise RuntimeError("This placeholder should not run while creating the pickle.")
+        """,
+        persistence_module.__dict__,
+    )
+    torch_utils_module.persistence = persistence_module
+
+    module_src = """
+from torch_utils import persistence
+import torch
+
+MODULE_SRC = None
+
+@persistence.persistent_class
+class PersistentTiny(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor([1.25]))
+
+    def __reduce__(self):
+        reduce_fn, reduce_args, state = super().__reduce__()
+        from torch_utils.persistence import _reconstruct_persistent_obj
+        meta = {
+            "module_src": MODULE_SRC,
+            "class_name": "PersistentTiny",
+            "state": state,
+        }
+        return (_reconstruct_persistent_obj, (meta,))
+"""
+
+    previous_modules = {
+        name: sys.modules.get(name)
+        for name in ("torch_utils", "torch_utils.persistence", "dnnlib", "dnnlib.util")
+    }
+    try:
+        sys.modules["torch_utils"] = torch_utils_module
+        sys.modules["torch_utils.persistence"] = persistence_module
+
+        module = types.ModuleType("tmp_persistent_nvidia_module")
+        exec(module_src, module.__dict__)
+        module.MODULE_SRC = module_src
+        checkpoint = {"ema": module.PersistentTiny()}
+
+        pkl_path = tmp_path / "persistent.pkl"
+        pt_path = tmp_path / "persistent.pt"
+        with pkl_path.open("wb") as file:
+            pickle.dump(checkpoint, file)
+
+        for name in ("torch_utils", "torch_utils.persistence", "dnnlib", "dnnlib.util"):
+            sys.modules.pop(name, None)
+
+        saved_path = dinv.models.NCSNpp.convert_checkpoint_to_pt(pkl_path, pt_path)
+        assert saved_path == str(pt_path)
+
+        converted_state_dict = torch.load(pt_path, map_location="cpu")
+        assert list(converted_state_dict.keys()) == ["weight"]
+        assert torch.equal(converted_state_dict["weight"], torch.tensor([1.25]))
+    finally:
+        for name, module in previous_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+def test_ncsnpp_strip_model_prefix():
+    state_dict = {
+        "model.layer.weight": torch.tensor([1.0]),
+        "model.layer.bias": torch.tensor([2.0]),
+    }
+    stripped = _strip_state_dict_prefixes(state_dict)
+    assert list(stripped.keys()) == ["layer.weight", "layer.bias"]
 
 
 @pytest.mark.parametrize("n_channels", [3])
