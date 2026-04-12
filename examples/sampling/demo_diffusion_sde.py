@@ -77,17 +77,17 @@ denoiser = NCSNpp(pretrained="download").to(device)
 
 # The solution is obtained by calling the SDE object with a desired solver (here, Euler).
 # The reproducibility of the SDE Solver class can be controlled by providing the pseudo-random number generator.
-num_steps = 150
+num_steps = 50
 rng = torch.Generator(device).manual_seed(42)
-timesteps = torch.linspace(1, 0.001, num_steps)
+timesteps = torch.linspace(1, 0., num_steps)
 solver = EulerSolver(timesteps=timesteps, rng=rng)
 
-sigma_min = 0.005
-sigma_max = 5
+sigma_min = 0.001
+sigma_max = 100
 sde = VarianceExplodingDiffusion(
     sigma_max=sigma_max,
     sigma_min=sigma_min,
-    alpha=0.5,
+    alpha=0.25,
     device=device,
     dtype=dtype,
 )
