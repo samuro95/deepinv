@@ -416,3 +416,36 @@ def test_noisy_data_fidelity(device):
             assert output.shape == x.shape
         except NotImplementedError:
             pass
+
+
+@torch.no_grad()
+def test_pigdm_and_moment_matching_data_fidelity(device):
+    from deepinv.sampling import PiGDMDataFidelity, MomentMatchingDataFidelity
+
+    sigma_prior = 0.7
+    sigma_t = 0.3
+    sigma_y = 0.2
+    denoiser = GaussianDenoiser(sigma_prior).to(device)
+    x = torch.rand(2, 1, 4, 4, device=device)
+    physics = dinv.physics.Denoising()
+    physics.noise_model = dinv.physics.GaussianNoise(sigma=sigma_y).to(device)
+    y = physics(x)
+
+    alpha = sigma_prior**2 / (sigma_prior**2 + sigma_t**2)
+    x0_t = denoiser(x, sigma_t)
+    residual = y - x0_t
+
+    pigdm = PiGDMDataFidelity(denoiser=denoiser, max_iter=8, tol=1e-7)
+    moment_matching = MomentMatchingDataFidelity(
+        denoiser=denoiser, max_iter=8, tol=1e-7
+    )
+
+    pigdm_grad = pigdm.grad(x, y, physics, sigma_t)
+    expected_pigdm_grad = -alpha * residual / (sigma_y**2 + sigma_t**2)
+    assert torch.allclose(pigdm_grad, expected_pigdm_grad, atol=1e-5, rtol=1e-5)
+    assert pigdm(x, y, physics, sigma_t).shape == torch.Size([x.size(0)])
+
+    mm_grad = moment_matching.grad(x, y, physics, sigma_t)
+    expected_mm_grad = -alpha * residual / (sigma_y**2 + sigma_t**2 * alpha)
+    assert torch.allclose(mm_grad, expected_mm_grad, atol=1e-5, rtol=1e-5)
+    assert moment_matching(x, y, physics, sigma_t).shape == torch.Size([x.size(0)])
