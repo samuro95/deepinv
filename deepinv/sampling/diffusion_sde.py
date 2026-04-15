@@ -935,6 +935,8 @@ class PosteriorDiffusion(Reconstructor):
                 raise ValueError("Either `x_init` or `physics` must be specified.")
         if self.minus_one_one and y is not None:
             y = (y - 0.5) * 2  # Scale y to [-1, 1]
+    
+
         solution = self.solver.sample(
             self.posterior,
             x_init,
@@ -946,6 +948,8 @@ class PosteriorDiffusion(Reconstructor):
             *args,
             **kwargs,
         )
+
+        # print('out', x.min(), x.max())
 
         # Scale the output back to [0, 1]
         sample = solution.sample
