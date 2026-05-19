@@ -132,17 +132,18 @@ dinv.utils.plot(
 x_plot = x.repeat(num_samples, 1, 1, 1)
 
 posterior_samples = []
-case_titles = []
-for alpha in alpha_values:
-    sampler = build_sampler(
-        alpha=alpha,
-        data_fidelity=MomentMatchingDataFidelity(denoiser=denoiser, weight=1.0),
-    )
+case_titles = [f"cutoff={cutoff_radius:.2f}" for cutoff_radius in cutoff_radii]
+sampler = build_sampler(
+    alpha=posterior_alpha,
+    data_fidelity=MomentMatchingDataFidelity(denoiser=denoiser, weight=1.0),
+)
+for cutoff_radius in cutoff_radii:
+    # physics = build_lowpass_physics(x.shape[1:], cutoff_radius)
     physics = dinv.physics.BlurFFT(
         x.shape[1:],
         filter=dinv.physics.blur.gaussian_blur((5, 5)),
         noise_model=dinv.physics.GaussianNoise(
-            sigma=0.05, rng=torch.Generator(device=x.device).manual_seed(123)
+            sigma=0.1, rng=torch.Generator(device=x.device).manual_seed(123)
         ),
         device=device,
     )
