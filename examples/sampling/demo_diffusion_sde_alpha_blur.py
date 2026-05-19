@@ -44,8 +44,8 @@ from deepinv.sampling import (
 )
 
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-dtype = torch.float64
+device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+dtype = torch.float64 if torch.cuda.is_available() else torch.float32
 figsize = 2.5
 num_samples = 5
 sample_shape = (num_samples, 3, 64, 64)
@@ -81,7 +81,7 @@ def build_sampler(alpha, data_fidelity):
         solver=solver,
         dtype=dtype,
         device=device,
-        verbose=False,
+        verbose=True,
     )
 
 
@@ -140,7 +140,15 @@ sampler = build_sampler(
     data_fidelity=MomentMatchingDataFidelity(denoiser=denoiser, weight=1.0),
 )
 for cutoff_radius in cutoff_radii:
-    physics = build_lowpass_physics(x.shape[1:], cutoff_radius)
+    # physics = build_lowpass_physics(x.shape[1:], cutoff_radius)
+    physics = dinv.physics.BlurFFT(
+        x.shape[1:],
+        filter=dinv.physics.blur.gaussian_blur((5, 5)),
+        noise_model=dinv.physics.GaussianNoise(
+            sigma=0.1, rng=torch.Generator(device=x.device).manual_seed(123)
+        ),
+        device=device,
+    )
     y = physics(x)
     x_hat = sampler(
         y=y,
