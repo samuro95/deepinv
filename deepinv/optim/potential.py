@@ -86,7 +86,8 @@ class Potential(nn.Module):
         z solving grad h(z) = x.
         """
         grad = lambda z: self.grad(z, *args, **kwargs) - x
-        z = gradient_descent(grad, x, verbose=False)
+        z = gradient_descent(grad, x, verbose=True, step_size=0.1, max_iter=1000, tol=1e-5)
+        # print("|| grad_conj (grad h(z)) - x ||  ", torch.norm(self.grad(z, *args, **kwargs) - x) / torch.norm(x))
         return z
 
     def prox(

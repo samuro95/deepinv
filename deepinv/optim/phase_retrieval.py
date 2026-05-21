@@ -6,6 +6,21 @@ if TYPE_CHECKING:
     from deepinv.physics import Physics
 
 
+def _flatten_batch(x: torch.Tensor) -> torch.Tensor:
+    return x.reshape(x.shape[0], -1)
+
+
+def _batch_l2_norm(x: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    return torch.sqrt((_flatten_batch(x).abs() ** 2).sum(dim=1, keepdim=True)).clamp_min(
+        eps
+    )
+
+
+def _reshape_batch_scalars(values: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    shape = (reference.shape[0],) + (1,) * (reference.ndim - 1)
+    return values.reshape(shape)
+
+
 def default_preprocessing(y: torch.Tensor, physics: Physics) -> torch.Tensor:
     r"""
     Default preprocessing function for spectral methods.
@@ -20,7 +35,7 @@ def default_preprocessing(y: torch.Tensor, physics: Physics) -> torch.Tensor:
 
     :return: The preprocessing function values evaluated at y.
     """
-    return torch.max(1 - 1 / y, torch.tensor(-5.0))
+    return torch.maximum(1 - 1 / y, torch.full_like(y, -5.0))
 
 
 def correct_global_phase(
@@ -167,11 +182,12 @@ def spectral_methods(
     #! estimate the norm of x using y
     #! for the i.i.d. case, we have norm(x) = sqrt(sum(y)/A_squared_mean)
     #! for the structured case, when the mean of the squared diagonal elements is 1, we have norm(x) = sqrt(sum(y)), otherwise y gets scaled by the mean to the power of number of layers
-    norm_x = torch.sqrt(y.sum())
+    norm_x = torch.sqrt(_flatten_batch(y).sum(dim=1).clamp_min(1e-12))
 
     x = x.to(torch.cfloat)
     # y should have mean 1
-    y = y / torch.mean(y)
+    y_mean = _flatten_batch(y).mean(dim=1).clamp_min(1e-12)
+    y = y / _reshape_batch_scalars(y_mean, y)
     diag_T = preprocessing(y, physics)
     diag_T = diag_T.to(torch.cfloat)
     for i in range(n_iter):
@@ -179,17 +195,18 @@ def spectral_methods(
         x_new = diag_T * x_new
         x_new = physics.B_adjoint(x_new)
         x_new = x_new + lamb * x
-        x_new = x_new / torch.linalg.norm(x_new)
+        x_new = x_new / _reshape_batch_scalars(_batch_l2_norm(x_new), x_new)
         if log:
             metrics.append(log_metric(x_new, x_true))
         if early_stop:
-            if torch.linalg.norm(x_new - x) / torch.linalg.norm(x) < rtol:
+            rel_change = _batch_l2_norm(x_new - x) / _batch_l2_norm(x)
+            if torch.max(rel_change) < rtol:
                 if verbose:
                     print(f"Power iteration early stopped at iteration {i}.")
                 break
         x = x_new
     #! change the norm of x so that it matches the norm of true x
-    x = x * norm_x
+    x = x * _reshape_batch_scalars(norm_x, x)
     if log:
         return x, metrics
     else:
